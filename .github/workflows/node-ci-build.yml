@@ -2,12 +2,14 @@ name: Build and Release
 on:
   push:
     branches:
-      - main
+      - ecs
 
 jobs:
   build-and-release:
     uses: ixoworld/ixo-github-actions/.github/workflows/node-monorepo-ci-build.yml@main
     secrets: inherit
+    with:
+      testnet_branches_override: 'ecs'
     permissions:
       contents: write
       packages: write
