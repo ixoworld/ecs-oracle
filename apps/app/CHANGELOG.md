@@ -1,5 +1,11 @@
 # app
 
+## 1.1.77
+
+### Patch Changes
+
+- [`f58892c`](https://github.com/ixoworld/ecs-oracle/commit/f58892cc3dbaa8fde1819001698049b45e919c6a) Thanks [@LukePetzer-ixo](https://github.com/LukePetzer-ixo)! - bump
+
 ## 1.1.76
 
 ### Patch Changes
