@@ -131,7 +131,7 @@ export const createMainAgent = async ({
     }),
     createFirecrawlAgent(),
     createDomainIndexerAgent(),
-    createMCPClientAndGetTools(),
+    createMCPClientAndGetTools(configurable.configs.user.did),
   ]);
 
   // Conditionally create BlockNote tools if editorRoomId is provided
@@ -172,13 +172,13 @@ export const createMainAgent = async ({
   // Build middleware list conditionally
   const configService = new ConfigService<ENV>();
   const disableCredits = configService.get('DISABLE_CREDITS', false);
-  
+
   const middleware = [
     createToolValidationMiddleware(),
     toolRetryMiddleware(),
     createSafetyGuardrailMiddleware(),
   ];
-  
+
   if (!disableCredits) {
     middleware.push(createTokenLimiterMiddleware());
   }
