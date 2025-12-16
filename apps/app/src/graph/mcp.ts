@@ -7,20 +7,21 @@ const ALLOWED_MCP_DIDS: string[] = [
   // Add allowed DIDs here
   'did:ixo:ixo1tfcltwvk35s6jdsxs09u5mqkrx5u0n3vu2vqgy', // mike
   'did:ixo:ixo1zem4acd0tudd0p8jf4x3nunt4h86sxnxsf0z0s', // mike
+  'did:ixo:ixo1nc6sygtv4jzdsssg2xjzmuszk9uhe2jnf970sd', // mike
 ];
 
 const mcpConfig: ClientConfig = {
   useStandardContentBlocks: true,
   prefixToolNameWithServerName: true,
   mcpServers: {
-    // ecs: {
-    //   type: 'http',
-    //   transport: 'http',
-    //   url: 'http://localhost:8083/mcp',
-    //   headers: {
-    //     Authorization: 'Bearer',
-    //   },
-    // },
+    ecs: {
+      type: 'http',
+      transport: 'http',
+      url: 'http://localhost:8083/mcp',
+      headers: {
+        Authorization: 'Bearer qnqzuQ48knggcYphzPW&CLPr68zHJ^52',
+      },
+    },
   },
 };
 
