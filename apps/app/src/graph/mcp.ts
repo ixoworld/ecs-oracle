@@ -17,7 +17,7 @@ const mcpConfig: ClientConfig = {
     ecs: {
       type: 'http',
       transport: 'http',
-      url: 'http://localhost:8083/mcp',
+      url: 'https://supamoto-onboarding.testmx.ixo.earth/mcp',
       headers: {
         Authorization: 'Bearer qnqzuQ48knggcYphzPW&CLPr68zHJ^52',
       },
