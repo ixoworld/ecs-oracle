@@ -1,5 +1,11 @@
 # app
 
+## 1.2.2
+
+### Patch Changes
+
+- [`8fba7bd`](https://github.com/ixoworld/ecs-oracle/commit/8fba7bdb2106e81d94c60a319ae8a9414d756396) Thanks [@MichaelPretorius](https://github.com/MichaelPretorius)! - fix ecs mcp url
+
 ## 1.2.1
 
 ### Patch Changes
