@@ -1,5 +1,11 @@
 # app
 
+## 1.2.0
+
+### Minor Changes
+
+- [`f45630c`](https://github.com/ixoworld/ecs-oracle/commit/f45630c75a095e1f68c21cb20e9debc69fe621df) Thanks [@MichaelPretorius](https://github.com/MichaelPretorius)! - Update proompt
+
 ## 1.1.77
 
 ### Patch Changes
