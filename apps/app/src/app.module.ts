@@ -14,6 +14,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CallsModule } from './calls/calls.module';
 import { type ENV, EnvSchema } from './config';
+import { DataVaultModule } from './data-vault';
 import { MessagesModule } from './messages/messages.module';
 import { AuthHeaderMiddleware } from './middleware/auth-header.middleware';
 import { SubscriptionMiddleware } from './middleware/subscription.middleware';
@@ -62,6 +63,7 @@ import { WsModule } from './ws/ws.module';
     ScheduleModule.forRoot(),
     SlackModule,
     CallsModule,
+    DataVaultModule,
   ],
   controllers: [AppController],
   providers: [
@@ -101,7 +103,7 @@ export class AppModule implements NestModule {
   constructor(private readonly configService: ConfigService<ENV>) {}
   configure(consumer: MiddlewareConsumer) {
     const disableCredits = this.configService.get('DISABLE_CREDITS', false);
-    
+
     if (disableCredits) {
       Logger.log('Subscription middleware disabled (DISABLE_CREDITS=true)');
       consumer
@@ -111,6 +113,8 @@ export class AppModule implements NestModule {
           { path: '/health', method: RequestMethod.ALL },
           { path: '/docs', method: RequestMethod.ALL },
           { path: '/docs/(.*)', method: RequestMethod.ALL },
+          // Data vault has its own auth (x-user-did + x-data-token)
+          { path: '/data-vault/(.*)', method: RequestMethod.ALL },
         )
         .forRoutes('*');
     } else {
@@ -121,6 +125,8 @@ export class AppModule implements NestModule {
           { path: '/health', method: RequestMethod.ALL },
           { path: '/docs', method: RequestMethod.ALL },
           { path: '/docs/(.*)', method: RequestMethod.ALL },
+          // Data vault has its own auth (x-user-did + x-data-token)
+          { path: '/data-vault/(.*)', method: RequestMethod.ALL },
         )
         .forRoutes('*');
     }

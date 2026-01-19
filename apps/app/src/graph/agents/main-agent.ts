@@ -35,6 +35,12 @@ interface InvokeMainAgentParams {
 
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  getDataVaultInstance,
+  getDataAnalysisInstance,
+  getDataVaultQueryInstance,
+  createOracleRetrievalTools,
+} from 'src/data-vault';
 import { UserMatrixSqliteSyncService } from 'src/user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
 import { createMCPClientAndGetTools } from '../mcp';
 
@@ -81,6 +87,16 @@ export const createMainAgent = async ({
     state.agActions && state.agActions.length > 0
       ? state.agActions.map((action) => parserActionTool(action))
       : [];
+
+  // Get DataVault instance for large data offloading
+  const dataVault = getDataVaultInstance();
+  const dataAnalysis = getDataAnalysisInstance();
+  const dataVaultQuery = getDataVaultQueryInstance();
+
+  // Create oracle retrieval tools for accessing vaulted data
+  const oracleRetrievalTools = dataVaultQuery
+    ? createOracleRetrievalTools(dataVaultQuery, configurable.configs.user.did)
+    : [];
 
   const [
     systemPrompt,
@@ -131,7 +147,12 @@ export const createMainAgent = async ({
     }),
     createFirecrawlAgent(),
     createDomainIndexerAgent(),
-    createMCPClientAndGetTools(configurable.configs.user.did),
+    createMCPClientAndGetTools({
+      userDid: configurable.configs.user.did,
+      sessionId: configurable.thread_id,
+      dataVault: dataVault ?? undefined,
+      dataAnalysis: dataAnalysis ?? undefined,
+    }),
   ]);
 
   // Conditionally create BlockNote tools if editorRoomId is provided
@@ -187,7 +208,7 @@ export const createMainAgent = async ({
     model: llm,
     subagents: agents,
     contextSchema,
-    tools: [...mcpTools, ...agActionTools],
+    tools: [...mcpTools, ...agActionTools, ...oracleRetrievalTools],
     middleware,
     systemPrompt,
     checkpointer: SqliteSaver.fromConnString(
