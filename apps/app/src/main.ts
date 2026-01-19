@@ -32,8 +32,10 @@ async function bootstrap(): Promise<void> {
       'x-did',
       'x-request-id',
       'x-timezone',
+      'x-user-did',
+      'x-data-token',
     ],
-    exposedHeaders: ['X-Request-Id'],
+    exposedHeaders: ['X-Request-Id', 'X-Data-Row-Count'],
   });
 
   // Global Validation Pipe

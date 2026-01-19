@@ -30,15 +30,12 @@ export class WsService implements OnModuleInit, OnModuleDestroy {
    */
   addClientConnection(sessionId: string, socket: Socket): void {
     if (!this.sessionConnections.has(sessionId)) {
-      this.logger.log(`Creating new session for: ${sessionId}`);
       this.sessionConnections.set(sessionId, new Set());
     }
 
     const connections = this.sessionConnections.get(sessionId);
     connections?.add(socket);
-    this.logger.log(
-      `Added connection to session: ${sessionId}, total connections: ${connections?.size}`,
-    );
+    this.logger.log(`Session ${sessionId.slice(-8)}: connection added (total: ${connections?.size})`);
   }
 
   /**
@@ -47,9 +44,6 @@ export class WsService implements OnModuleInit, OnModuleDestroy {
   publishToSession(sessionId: string, event: AllEvents): void {
     const connections = this.sessionConnections.get(sessionId);
     if (connections && connections.size > 0) {
-      this.logger.log(
-        `Publishing event to session: ${sessionId}, connections: ${connections.size}`,
-      );
       connections.forEach((socket) => {
         if (socket.connected) {
           socket.emit('event', event);
@@ -75,14 +69,11 @@ export class WsService implements OnModuleInit, OnModuleDestroy {
     const connections = this.sessionConnections.get(sessionId);
     if (connections) {
       connections.delete(socket);
-      this.logger.log(
-        `Removed connection from session: ${sessionId}, remaining: ${connections.size}`,
-      );
+      this.logger.log(`Session ${sessionId.slice(-8)}: connection removed (remaining: ${connections.size})`);
 
       // Clean up empty sessions
       if (connections.size === 0) {
         this.sessionConnections.delete(sessionId);
-        this.logger.log(`Cleaned up empty session: ${sessionId}`);
         const oracleEntityDid =
           this.configService.getOrThrow('ORACLE_ENTITY_DID');
 
