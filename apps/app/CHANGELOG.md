@@ -1,5 +1,11 @@
 # app
 
+## 1.3.0
+
+### Minor Changes
+
+- [#6](https://github.com/ixoworld/ecs-oracle/pull/6) [`f0b49cc`](https://github.com/ixoworld/ecs-oracle/commit/f0b49ccece12af0cac5c2d71e557086fc5ca748d) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Added big data vault feature
+
 ## 1.2.2
 
 ### Patch Changes
