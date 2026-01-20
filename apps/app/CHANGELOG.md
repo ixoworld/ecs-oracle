@@ -1,5 +1,11 @@
 # app
 
+## 1.3.2
+
+### Patch Changes
+
+- [#10](https://github.com/ixoworld/ecs-oracle/pull/10) [`bc97cde`](https://github.com/ixoworld/ecs-oracle/commit/bc97cde596f17c02d0eec128ab5ca5efa6557bfa) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Update mcp auth list
+
 ## 1.3.1
 
 ### Patch Changes
