@@ -1,5 +1,11 @@
 # app
 
+## 1.3.1
+
+### Patch Changes
+
+- [#8](https://github.com/ixoworld/ecs-oracle/pull/8) [`37be128`](https://github.com/ixoworld/ecs-oracle/commit/37be128443323d47adf126d5c690297a17e75001) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Extract ECS mcp vars to .env
+
 ## 1.3.0
 
 ### Minor Changes
