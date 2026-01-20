@@ -73,6 +73,8 @@ export const EnvSchema = z.object({
   ORACLE_ENTITY_DID: z.string(),
   SUBSCRIPTION_URL: z.string().optional(),
   FIRECRAWL_MCP_URL: z.url(),
+  ECS_MCP_URL: z.url(),
+  ECS_MCP_AUTH_TOKEN: z.string(),
   DOMAIN_INDEXER_URL: z.url(),
   REDIS_URL: z.string(),
   SECP_MNEMONIC: z.string(),

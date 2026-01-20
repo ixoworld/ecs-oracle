@@ -1,11 +1,15 @@
 import { ClientConfig, MultiServerMCPClient } from '@langchain/mcp-adapters';
 import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { type StructuredTool } from 'langchain';
+import { ENV } from 'src/config';
 import {
   DataVaultService,
   DataAnalysisService,
   wrapMCPToolsWithDataVault,
 } from 'src/data-vault';
+
+const configService = new ConfigService<ENV>();
 
 // Static allowlist for MCP access (temp solution)
 const ALLOWED_MCP_DIDS: string[] = [
@@ -23,10 +27,9 @@ const mcpConfig: ClientConfig = {
     ecs: {
       type: 'http',
       transport: 'http',
-      url: 'https://supamoto-onboarding.testmx.ixo.earth/mcp',
-      // url: 'http://localhost:8083/mcp',
+      url: configService.getOrThrow('ECS_MCP_URL'),
       headers: {
-        Authorization: 'Bearer qnqzuQ48knggcYphzPW&CLPr68zHJ^52',
+        Authorization: `Bearer ${configService.getOrThrow('ECS_MCP_AUTH_TOKEN')}`,
       },
     },
   },
