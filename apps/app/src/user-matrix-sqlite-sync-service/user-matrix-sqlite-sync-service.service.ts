@@ -297,6 +297,7 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
     Logger.debug(
       `Checkpoint file not found locally for user ${userDid}, attempting to download from Matrix`,
     );
+    // return; // ADD THIS LINE - Skip downloading from Matrix, start fresh
 
     let userDB: GetMediaFromRoomByStorageKeyResult | null = null;
 

@@ -18,6 +18,7 @@ const ALLOWED_MCP_DIDS: string[] = [
   'did:ixo:ixo1zem4acd0tudd0p8jf4x3nunt4h86sxnxsf0z0s', // mike
   'did:ixo:ixo1nc6sygtv4jzdsssg2xjzmuszk9uhe2jnf970sd', // mike
   'did:ixo:ixo1yxsut3tguvc65ud55zh3mgeveu06e0m6t5ulsf', // mike
+  'did:ixo:ixo12am7v5xgjh72c7xujreyvtncqwue3w0v6ud3r4', // mike (alice)
   'did:ixo:ixo1ujxelhkaf0hnuhm0fhdsy6c3fy5rdwtk4nhnr6', // Graeme Test
   'did:ixo:ixo1v8ewsaavpavc9r44n6x6efknhscz56fp5k7a9m', // Graeme Main
   'did:x:zQ3shNGDBopWqD2byBcyo5dHeS5ggKE3bJyqRFKUfWLGPq2J4', // Graeme Main
