@@ -1,5 +1,11 @@
 # app
 
+## 1.3.3
+
+### Patch Changes
+
+- [#12](https://github.com/ixoworld/ecs-oracle/pull/12) [`2e518af`](https://github.com/ixoworld/ecs-oracle/commit/2e518af6f298ce26fbc5f8dc2b0388e1edd96087) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Increase vault public rate limits
+
 ## 1.3.2
 
 ### Patch Changes
