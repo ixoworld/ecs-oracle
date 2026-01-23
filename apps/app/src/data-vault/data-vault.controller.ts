@@ -8,6 +8,7 @@ import {
   Logger,
   Res,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { DataVaultService } from './data-vault.service';
 
@@ -17,6 +18,12 @@ import { DataVaultService } from './data-vault.service';
  * Frontend fetches data from this endpoint after receiving a dataHandle
  * from an AG-UI tool call.
  */
+@Throttle({
+  default: {
+    ttl: 60000, // 60 seconds
+    limit: 100, // 100 requests per minute (10x global limit)
+  },
+})
 @Controller('data-vault')
 export class DataVaultController {
   private readonly logger = new Logger(DataVaultController.name);
