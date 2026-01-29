@@ -1,5 +1,11 @@
 # app
 
+## 1.3.4
+
+### Patch Changes
+
+- [#14](https://github.com/ixoworld/ecs-oracle/pull/14) [`90803c9`](https://github.com/ixoworld/ecs-oracle/commit/90803c90a577eba941ef2d2775e73bb6424b60a7) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Update allowed dids list
+
 ## 1.3.3
 
 ### Patch Changes
