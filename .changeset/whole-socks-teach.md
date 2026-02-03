@@ -1,5 +1,5 @@
 ---
-'app': major
+'app': patch
 ---
 
 update mcp whitelist
