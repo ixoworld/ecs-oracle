@@ -1,5 +1,11 @@
 # app
 
+## 1.3.5
+
+### Patch Changes
+
+- [#17](https://github.com/ixoworld/ecs-oracle/pull/17) [`56b8aba`](https://github.com/ixoworld/ecs-oracle/commit/56b8aba9a1b868d0e8b861b5fab0ea038e447ea5) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - update mcp whitelist
+
 ## 1.3.4
 
 ### Patch Changes
