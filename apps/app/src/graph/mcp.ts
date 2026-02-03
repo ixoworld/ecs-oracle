@@ -25,6 +25,7 @@ const ALLOWED_MCP_DIDS: string[] = [
   'did:x:zQ3shNGDBopWqD2byBcyo5dHeS5ggKE3bJyqRFKUfWLGPq2J4', // Graeme Main
   'did:ixo:ixo1aqrxzvwdw7wqh27jafc60j5ny9gyjcuewrvfp5', // Alwyn Test
   'did:ixo:ixo1aqrxzvwdw7wqh27jafc60j5ny9gyjcuewrvfp5', // Alwyn Main
+  'did:ixo:ixo1hldfmx3h7hujfgty0mmykmvmh6cj8d8ptalfun', // Alwyn
   'did:ixo:ixo1latzweagqawv6cr3pdlkuvzetll35rlyfzd7nr', // Bupe Test
   'did:ixo:ixo16045372qxdvtyrh9at8tsm7zfskxqey8lw6nmg', // Bupe Test
   'did:x:zQ3shqitrJkJshfb6XSGLyALr3snt8XyAaDUEf1WEaHX8qqcW', // Bupe Main
