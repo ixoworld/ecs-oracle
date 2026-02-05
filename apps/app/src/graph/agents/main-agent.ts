@@ -28,9 +28,13 @@ import { EDITOR_DOCUMENTATION_CONTENT } from './editor/prompts';
 import { createFirecrawlAgent } from './firecrawl-agent';
 import { createMemoryAgent } from './memory-agent';
 import { createPortalAgent } from './portal-agent';
+import { UcanService } from 'src/ucan/ucan.service';
+
 interface InvokeMainAgentParams {
   state: Partial<TMainAgentGraphState>;
   config: IRunnableConfigWithRequiredFields;
+  /** Optional UCAN service for MCP tool authorization */
+  ucanService?: UcanService;
 }
 
 import fs from 'node:fs';
@@ -42,7 +46,10 @@ import {
   createOracleRetrievalTools,
 } from 'src/data-vault';
 import { UserMatrixSqliteSyncService } from 'src/user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
-import { createMCPClientAndGetTools } from '../mcp';
+import {
+  createMCPClientAndGetTools,
+  createMCPClientAndGetToolsWithUCAN,
+} from '../mcp';
 
 const llm = getOpenRouterChatModel({
   model: 'openai/gpt-oss-120b:nitro',
@@ -59,6 +66,7 @@ const llm = getOpenRouterChatModel({
 export const createMainAgent = async ({
   state,
   config,
+  ucanService,
 }: InvokeMainAgentParams) => {
   const msgFromMatrixRoom = Boolean(
     state.messages?.at(-1)?.additional_kwargs.msgFromMatrixRoom,
@@ -97,6 +105,22 @@ export const createMainAgent = async ({
   const oracleRetrievalTools = dataVaultQuery
     ? createOracleRetrievalTools(dataVaultQuery, configurable.configs.user.did)
     : [];
+
+  // Create MCP tools - use UCAN-wrapped version if service is available
+  const getMcpTools = async () => {
+    if (ucanService) {
+      return createMCPClientAndGetToolsWithUCAN(
+        ucanService,
+        () => state.mcpUcanContext,
+      );
+    }
+    return createMCPClientAndGetTools({
+      userDid: configurable.configs.user.did,
+      sessionId: configurable.thread_id,
+      dataVault: dataVault ?? undefined,
+      dataAnalysis: dataAnalysis ?? undefined,
+    });
+  };
 
   const [
     systemPrompt,
@@ -147,12 +171,7 @@ export const createMainAgent = async ({
     }),
     createFirecrawlAgent(),
     createDomainIndexerAgent(),
-    createMCPClientAndGetTools({
-      userDid: configurable.configs.user.did,
-      sessionId: configurable.thread_id,
-      dataVault: dataVault ?? undefined,
-      dataAnalysis: dataAnalysis ?? undefined,
-    }),
+    getMcpTools(),
   ]);
 
   // Conditionally create BlockNote tools if editorRoomId is provided
