@@ -9,7 +9,7 @@ import { SqliteSaver } from '@ixo/sqlite-saver';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createDeepAgent, FilesystemBackend } from 'deepagents';
-import { toolRetryMiddleware } from 'langchain';
+import { ReactAgent, toolRetryMiddleware } from 'langchain';
 import { ENV } from 'src/config';
 import { createSafetyGuardrailMiddleware } from '../middlewares/safety-guardrail-middleware';
 import { createTokenLimiterMiddleware } from '../middlewares/token-limiter-middelware';
@@ -67,7 +67,7 @@ export const createMainAgent = async ({
   state,
   config,
   ucanService,
-}: InvokeMainAgentParams) => {
+}: InvokeMainAgentParams): Promise<ReactAgent<any, any, any, any>> => {
   const msgFromMatrixRoom = Boolean(
     state.messages?.at(-1)?.additional_kwargs.msgFromMatrixRoom,
   );
@@ -230,8 +230,8 @@ export const createMainAgent = async ({
     tools: [...mcpTools, ...agActionTools, ...oracleRetrievalTools],
     middleware,
     systemPrompt,
-    checkpointer: SqliteSaver.fromConnString(
-      UserMatrixSqliteSyncService.getUserCheckpointDbPath(
+    checkpointer: SqliteSaver.fromDatabase(
+      await UserMatrixSqliteSyncService.getInstance().getUserDatabase(
         configurable?.configs?.user?.did,
       ),
     ),
