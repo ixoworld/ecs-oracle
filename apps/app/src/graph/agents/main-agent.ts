@@ -115,8 +115,8 @@ export const createMainAgent = async ({
       );
     }
     return createMCPClientAndGetTools({
-      userDid: configurable.configs.user.did,
-      sessionId: configurable.thread_id,
+      userDid: configurable.configs?.user.did ?? '',
+      sessionId: configurable.thread_id ?? '',
       dataVault: dataVault ?? undefined,
       dataAnalysis: dataAnalysis ?? undefined,
     });
