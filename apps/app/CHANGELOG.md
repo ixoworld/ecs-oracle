@@ -1,5 +1,11 @@
 # app
 
+## 1.3.6
+
+### Patch Changes
+
+- [#19](https://github.com/ixoworld/ecs-oracle/pull/19) [`2d72b78`](https://github.com/ixoworld/ecs-oracle/commit/2d72b786a697adc672ac8c5c3b2dcaa7637bbb01) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Merge boilerplate into ecs, includes matrix decoupling and sqlite fixes
+
 ## 1.3.5
 
 ### Patch Changes
