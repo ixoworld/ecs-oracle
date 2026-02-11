@@ -10,6 +10,7 @@ import {
   type MessageEvent,
   type MessageEventContent,
 } from '@ixo/matrix';
+import { getMatrixHomeServerCroppedForDid } from '@ixo/oracles-chain-client';
 import {
   ActionCallEvent,
   ReasoningEvent,
@@ -185,11 +186,13 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
       }
 
       try {
+        const homeServer = event.sender.split(':')[1];
         const aiMessage = await this.sendMessage({
           clientType: 'matrix',
           message: text,
           did,
           sessionId: threadId,
+          homeServer,
           msgFromMatrixRoom: true,
           userMatrixOpenIdToken: '',
         });
@@ -229,17 +232,22 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
   public async listMessages(
     params: ListMessagesDto & {
       did: string;
+      homeServer?: string;
     },
   ): Promise<ListOracleMessagesResponse> {
-    const { did, sessionId } = params;
+    const { did, sessionId, homeServer } = params;
     if (!sessionId || !did) {
       throw new BadRequestException('Invalid parameters');
     }
 
+    this.checkpointStorageSyncService.markUserActive(did);
+    try {
+      const userHomeServer = homeServer || await getMatrixHomeServerCroppedForDid(did);
     const { roomId } =
-      await this.sessionManagerService.matrixManger.getOracleRoomId({
+      await this.sessionManagerService.matrixManger.getOracleRoomIdWithHomeServer({
         userDid: did,
         oracleEntityDid: this.config.getOrThrow('ORACLE_ENTITY_DID'),
+        userHomeServer,
       });
 
     if (!roomId) {
@@ -267,7 +275,10 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
     if (!state) {
       return transformGraphStateMessageToListMessageResponse([]);
     }
-    return transformGraphStateMessageToListMessageResponse(state.messages);
+      return transformGraphStateMessageToListMessageResponse(state.messages);
+    } finally {
+      this.checkpointStorageSyncService.markUserInactive(did);
+    }
   }
 
   public async sendMessage(
@@ -275,7 +286,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
       res?: Response;
       clientType?: 'matrix' | 'slack';
       msgFromMatrixRoom?: boolean;
-      req?: Request; // Express Request object for abort detection
+      req?: Request;
     },
   ): Promise<
     | undefined
@@ -288,6 +299,11 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
         sessionId: string;
       }
   > {
+    // Mark user as active to prevent cron from closing their DB connection
+    // Must be set BEFORE prepareForQuery which calls getUserDatabase
+    this.checkpointStorageSyncService.markUserActive(params.did);
+
+    try {
     const { runnableConfig, sessionId, roomId, userContext, targetSession } =
       await this.prepareForQuery(params);
 
@@ -672,7 +688,10 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
 
               sendSSEDone(params.res);
 
-              // Fire-and-forget post-message sync operations for streaming
+              // Increment ref count BEFORE firing background task so
+              // the outer finally's markUserInactive doesn't drop to 0
+              // while performPostMessageSync still accesses the DB.
+              this.checkpointStorageSyncService.markUserActive(params.did);
               this.performPostMessageSync(
                 params,
                 sessionId,
@@ -697,6 +716,9 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
             '[MessagesService] Stream aborted by client, exiting cleanly',
           );
 
+          if (!params.res.writableEnded) {
+            sendSSEDone(params.res);
+          }
           return;
         }
 
@@ -710,6 +732,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
             params.res,
             error instanceof Error ? error : 'Something went wrong',
           );
+          sendSSEDone(params.res);
         }
       } finally {
         // Clear heartbeat and end response
@@ -755,7 +778,10 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
         });
     }
 
-    // Fire-and-forget post-message sync operations
+    // Increment ref count BEFORE firing background task so
+    // the outer finally's markUserInactive doesn't drop to 0
+    // while performPostMessageSync still accesses the DB.
+    this.checkpointStorageSyncService.markUserActive(params.did);
     this.performPostMessageSync(params, sessionId, roomId, targetSession);
 
     return {
@@ -766,6 +792,11 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
       },
       sessionId,
     };
+    } finally {
+      // Mark user inactive so cron can safely manage their DB
+      // Covers both streaming and non-streaming paths
+      this.checkpointStorageSyncService.markUserInactive(params.did);
+    }
   }
 
   /**
@@ -785,6 +816,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
         const { messages: currentMessages } = await this.listMessages({
           did: params.did,
           sessionId,
+          homeServer: params.homeServer,
         });
         // Sync session (fire-and-forget)
         await this.sessionManagerService.syncSessionSet({
@@ -804,6 +836,8 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
       } catch (error) {
         Logger.error('Failed to perform post-message sync:', error);
         // Don't throw - this is fire-and-forget
+      } finally {
+        this.checkpointStorageSyncService.markUserInactive(params.did);
       }
     });
   }
@@ -925,10 +959,12 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
     // Use cached roomId if available, otherwise fetch it
     let roomId = targetSession?.roomId;
     if (!roomId) {
+      const userHomeServer = payload.homeServer || await getMatrixHomeServerCroppedForDid(did);
       const roomResult =
-        await this.sessionManagerService.matrixManger.getOracleRoomId({
+        await this.sessionManagerService.matrixManger.getOracleRoomIdWithHomeServer({
           userDid: did,
           oracleEntityDid: this.config.getOrThrow('ORACLE_ENTITY_DID'),
+          userHomeServer,
         });
       roomId = roomResult.roomId;
       if (!roomId) {

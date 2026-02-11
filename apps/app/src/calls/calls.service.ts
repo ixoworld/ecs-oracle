@@ -1,4 +1,5 @@
 import { EncryptedRoomEvent, MatrixManager } from '@ixo/matrix';
+import { getMatrixHomeServerCroppedForDid } from '@ixo/oracles-chain-client';
 import {
   BadRequestException,
   ConflictException,
@@ -110,38 +111,47 @@ export class CallsService {
     if (!callId || !userDid) {
       throw new BadRequestException('Invalid parameters');
     }
-    const [eventId, roomId] = callId.split('@');
 
-    if (!roomId) {
-      throw new NotFoundException(
-        'Room ID not found for the given session and oracle',
-      );
+    this.syncService.markUserActive(userDid);
+    try {
+      const [eventId, roomId] = callId.split('@');
+
+      if (!roomId) {
+        throw new NotFoundException(
+          'Room ID not found for the given session and oracle',
+        );
+      }
+
+      const callEvent =
+        await this.matrixManager.getEventById<OraclesCallMatrixEventContent>(
+          roomId,
+          eventId,
+        );
+      if (!callEvent) {
+        throw new NotFoundException(`Call event with ID '${callId}' not found`);
+      }
+
+      await this.addCall(userDid, callId, callEvent.content.sessionId);
+
+      return { callId };
+    } finally {
+      this.syncService.markUserInactive(userDid);
     }
-
-    const callEvent =
-      await this.matrixManager.getEventById<OraclesCallMatrixEventContent>(
-        roomId,
-        eventId,
-      );
-    if (!callEvent) {
-      throw new NotFoundException(`Call event with ID '${callId}' not found`);
-    }
-
-    await this.addCall(userDid, callId, callEvent.content.sessionId);
-
-    return { callId };
   }
 
   async listCalls(dto: ListCallDto): Promise<ListCallResponse> {
+    this.syncService.markUserActive(dto.userDid);
     try {
       validateSync(dto);
 
       // Check SQLite first
       const callsRows = await this.listCallsFromDB(dto.userDid, dto.sessionId);
 
-      const { roomId } = await this.matrixManager.getOracleRoomId({
+      const userHomeServer = dto.homeServer || await getMatrixHomeServerCroppedForDid(dto.userDid);
+      const { roomId } = await this.matrixManager.getOracleRoomIdWithHomeServer({
         userDid: dto.userDid,
         oracleEntityDid: this.configService.getOrThrow('ORACLE_ENTITY_DID'),
+        userHomeServer,
       });
 
       if (!roomId) {
@@ -221,11 +231,11 @@ export class CallsService {
         'errcode' in error &&
         error.errcode === 'M_NOT_FOUND'
       ) {
-        {
-          return { calls: [] };
-        }
+        return { calls: [] };
       }
       throw error;
+    } finally {
+      this.syncService.markUserInactive(dto.userDid);
     }
   }
 
@@ -257,8 +267,6 @@ export class CallsService {
     const currentContent = callEvent.content;
     const currentStatus = currentContent.callStatus;
     const newStatus = updateCallDto.callStatus;
-    console.log('🚀 ~ CallsService ~ updateCall ~ newStatus:', newStatus);
-
     // Validate state transitions
     if (newStatus) {
       this.validateStateTransition(currentStatus, newStatus);
@@ -359,17 +367,8 @@ export class CallsService {
       }
       updatedContent.callEndedAt = updateDto.callEndedAt;
     }
-    console.log(
-      '🚀 ~ CallsService ~ buildUpdatedCallContent ~ updatedContent:',
-      updatedContent,
-    );
-
     // Validate timestamp logic
     this.validateTimestamps(updatedContent);
-    console.log(
-      '🚀 ~ CallsService ~ buildUpdatedCallContent ~ updatedContent:',
-      updatedContent,
-    );
     return updatedContent;
   }
 
