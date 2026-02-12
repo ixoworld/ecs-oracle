@@ -1,5 +1,11 @@
 # app
 
+## 2.0.2
+
+### Patch Changes
+
+- [`5fe2b94`](https://github.com/ixoworld/ecs-oracle/commit/5fe2b9465e1cf2e22587adef2f7e4900cb0c5174) Thanks [@LukePetzer-ixo](https://github.com/LukePetzer-ixo)! - private false
+
 ## 2.0.1
 
 ### Patch Changes
