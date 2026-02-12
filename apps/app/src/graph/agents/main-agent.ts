@@ -131,19 +131,22 @@ export const createMainAgent = async ({
     : [];
 
   // Create MCP tools - use UCAN-wrapped version if service is available
+  const dataVaultContext = {
+    userDid: configurable.configs?.user.did ?? '',
+    sessionId: configurable.thread_id ?? '',
+    dataVault: dataVault ?? undefined,
+    dataAnalysis: dataAnalysis ?? undefined,
+  };
+
   const getMcpTools = async () => {
     if (ucanService) {
       return createMCPClientAndGetToolsWithUCAN(
         ucanService,
         () => state.mcpUcanContext,
+        dataVaultContext,
       );
     }
-    return createMCPClientAndGetTools({
-      userDid: configurable.configs?.user.did ?? '',
-      sessionId: configurable.thread_id ?? '',
-      dataVault: dataVault ?? undefined,
-      dataAnalysis: dataAnalysis ?? undefined,
-    });
+    return createMCPClientAndGetTools(dataVaultContext);
   };
 
   const [
