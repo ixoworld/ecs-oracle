@@ -1,5 +1,11 @@
 # app
 
+## 2.0.1
+
+### Patch Changes
+
+- [`0442f07`](https://github.com/ixoworld/ecs-oracle/commit/0442f07ed2779d06090254d913d49ca75f208b7a) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - version bump
+
 ## 2.0.0
 
 ### Major Changes
