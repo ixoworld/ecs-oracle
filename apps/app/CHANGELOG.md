@@ -1,5 +1,11 @@
 # app
 
+## 2.0.0
+
+### Major Changes
+
+- [`9de2c8e`](https://github.com/ixoworld/ecs-oracle/commit/9de2c8ef629f1ef9aeee7a13b8baf5229efa0339) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Megre boilerplate with new agents as tools
+
 ## 1.4.0
 
 ### Minor Changes
