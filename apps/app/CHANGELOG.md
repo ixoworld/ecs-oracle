@@ -1,5 +1,11 @@
 # app
 
+## 1.4.0
+
+### Minor Changes
+
+- [#22](https://github.com/ixoworld/ecs-oracle/pull/22) [`fb83110`](https://github.com/ixoworld/ecs-oracle/commit/fb83110aca5d280b429493bc14ee2637bfd799bc) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Merge boilerplate changes, fix big data wrapper
+
 ## 1.3.6
 
 ### Patch Changes
