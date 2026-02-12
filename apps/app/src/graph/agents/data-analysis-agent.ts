@@ -1,5 +1,5 @@
 import { getOpenRouterChatModel } from '@ixo/common';
-import { SubAgent } from 'deepagents';
+import type { AgentSpec } from './subagent-as-tool';
 
 /**
  * Data Analysis Agent
@@ -177,7 +177,7 @@ Return your analysis as a JSON object:
 Now analyze the provided data samples and return your structured analysis.
 `.trim();
 
-export type DataAnalysisAgentInstance = Awaited<SubAgent>;
+export type DataAnalysisAgentInstance = AgentSpec;
 
 export const createDataAnalysisAgent =
   async (): Promise<DataAnalysisAgentInstance> => {
