@@ -159,7 +159,7 @@ export const createMainAgent = async ({
     sandboxTools,
   ] = await Promise.all([
     AI_ASSISTANT_PROMPT.format({
-      APP_NAME: 'IXO | IXO Portal',
+      APP_NAME: 'ECS Oracle | SupaMoto',
       IDENTITY_CONTEXT: jsonToYaml(state?.userContext?.identity ?? {}),
       WORK_CONTEXT: jsonToYaml(state?.userContext?.work ?? {}),
       GOALS_CONTEXT: jsonToYaml(state?.userContext?.goals ?? {}),
