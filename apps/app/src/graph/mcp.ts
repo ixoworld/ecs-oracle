@@ -33,6 +33,7 @@ const ALLOWED_MCP_DIDS: string[] = [
   'did:ixo:ixo1wrgdf0y9y6pz0vmz9vxk43l7dq7qu4xeel8hkz', // Annie Test
   'did:ixo:ixo1wrgdf0y9y6pz0vmz9vxk43l7dq7qu4xeel8hkz', // Joshua Test
   'did:ixo:ixo1vuv0sqv3dnwsc60g04pmwtn9xt2f0jvjjjncdu', // Loveness Test
+  'did:ixo:ixo1u9ufzd4adw9xc0cymn53jas3zlxf4q6nxvy0e9', // Mike local
 ];
 
 /**
@@ -287,8 +288,15 @@ export const createMCPClientAndGetTools = async (
 export const createMCPClientAndGetToolsWithUCAN = async (
   ucanService: UcanService,
   getContext: () => MCPUCANContext | undefined,
+  dataVaultContext?: MCPToolsContext,
 ): Promise<StructuredTool[]> => {
   try {
+    // Check allowlist first if dataVaultContext provides userDid
+    if (dataVaultContext?.userDid && !ALLOWED_MCP_DIDS.includes(dataVaultContext.userDid)) {
+      Logger.log(`MCP access denied for user: ${dataVaultContext.userDid}`);
+      return [];
+    }
+
     const hasServers = Object.keys(mcpConfig.mcpServers).length > 0;
     if (!hasServers) {
       return [];
@@ -300,7 +308,7 @@ export const createMCPClientAndGetToolsWithUCAN = async (
     const tools = await client.getTools();
 
     // Wrap each tool with UCAN validation if configured
-    const wrappedTools = tools.map((tool) => {
+    const ucanWrappedTools = tools.map((tool) => {
       const { serverName } = parseMCPToolName(tool.name);
       const serverConfig = mcpConfig.ucanConfig?.[serverName];
 
@@ -312,10 +320,29 @@ export const createMCPClientAndGetToolsWithUCAN = async (
       return tool;
     });
 
+    // Wrap tools with DataVault for large data offloading
+    const { dataVault, dataAnalysis } = dataVaultContext ?? {};
+    if (dataVault && ucanWrappedTools.length > 0) {
+      Logger.log(
+        '🗄️ Wrapping MCP tools with DataVault for large data handling',
+      );
+      const finalTools = wrapMCPToolsWithDataVault(ucanWrappedTools, {
+        userDid: dataVaultContext?.userDid ?? '',
+        sessionId: dataVaultContext?.sessionId ?? '',
+        dataVault,
+        dataAnalysis,
+      });
+
+      Logger.log(
+        `✅ Successfully loaded ${finalTools.length} MCP tool(s) (${Object.keys(mcpConfig.ucanConfig ?? {}).length} with UCAN protection, DataVault enabled)`,
+      );
+      return finalTools;
+    }
+
     Logger.log(
-      `✅ Successfully loaded ${wrappedTools.length} MCP tool(s) (${Object.keys(mcpConfig.ucanConfig ?? {}).length} with UCAN protection)`,
+      `✅ Successfully loaded ${ucanWrappedTools.length} MCP tool(s) (${Object.keys(mcpConfig.ucanConfig ?? {}).length} with UCAN protection)`,
     );
-    return wrappedTools;
+    return ucanWrappedTools;
   } catch (error) {
     Logger.error('Failed to get MCP tools:', error);
     return [];

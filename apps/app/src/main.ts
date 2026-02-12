@@ -10,6 +10,7 @@ import { AppModule } from './app.module';
 import { ENV } from './config';
 import { EditorMatrixClient } from './graph/agents/editor/editor-mx';
 import { UserMatrixSqliteSyncService } from './user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
+
 async function bootstrap(): Promise<void> {
   // await migrate();
 
@@ -103,7 +104,8 @@ async function bootstrap(): Promise<void> {
   registerGracefulShutdown({ app, matrixManager });
 
   const matrixAccountRoomId = configService.get('MATRIX_ACCOUNT_ROOM_ID');
-  const disableCredits = configService.get('DISABLE_CREDITS', false) || !matrixAccountRoomId;
+  const disableCredits =
+    configService.get('DISABLE_CREDITS', false) || !matrixAccountRoomId;
   if (!disableCredits) {
     Logger.log('Setting up claim signing mnemonics...');
     Logger.log(`Matrix account room id: ${matrixAccountRoomId}`);
@@ -130,7 +132,7 @@ async function bootstrap(): Promise<void> {
     `subscription: ${configService.get('SUBSCRIPTION_URL') ?? getSubscriptionUrlByNetwork(configService.getOrThrow('NETWORK'))}`,
   );
   Logger.log(
-    `Throw on insufficient credits: ${configService.get('THROW_ON_INSUFFICIENT_CREDITS')}. type: ${typeof configService.get('THROW_ON_INSUFFICIENT_CREDITS')}`,
+    `Credits disabled: ${configService.get('DISABLE_CREDITS')}. type: ${typeof configService.get('DISABLE_CREDITS')}`,
   );
 }
 
@@ -225,7 +227,6 @@ function registerGracefulShutdown({
   });
 }
 
-
 // Handle unhandled promise rejections
 process.on(
   'unhandledRejection',
@@ -263,5 +264,3 @@ bootstrap().catch((error) => {
   );
   process.exit(1);
 });
-
-

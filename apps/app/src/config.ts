@@ -82,13 +82,13 @@ export const EnvSchema = z.object({
   RPC_URL: z.string(),
   MATRIX_VALUE_PIN: z.string(),
   // convert string to boolean
-  THROW_ON_INSUFFICIENT_CREDITS: z.string().transform((val) => val === 'true'),
   DISABLE_CREDITS: z
     .string()
     .transform((val) => val === 'true')
-    .optional(),
+    .default(false),
 
   MATRIX_ACCOUNT_ROOM_ID: z.string(),
+  SANDBOX_MCP_URL: z.url(),
 });
 
 export type ENV = z.infer<typeof EnvSchema> & {
