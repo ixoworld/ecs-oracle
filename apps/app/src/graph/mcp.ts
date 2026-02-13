@@ -34,6 +34,7 @@ const ALLOWED_MCP_DIDS: string[] = [
   'did:ixo:ixo1wrgdf0y9y6pz0vmz9vxk43l7dq7qu4xeel8hkz', // Joshua Test
   'did:ixo:ixo1vuv0sqv3dnwsc60g04pmwtn9xt2f0jvjjjncdu', // Loveness Test
   'did:ixo:ixo1u9ufzd4adw9xc0cymn53jas3zlxf4q6nxvy0e9', // Mike local
+  'did:ixo:ixo1d82np5420yfa2nqwczgqkukgves49alv3v5uag', // Alwyn
 ];
 
 /**
