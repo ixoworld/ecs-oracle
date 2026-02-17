@@ -1,5 +1,11 @@
 # app
 
+## 2.0.5
+
+### Patch Changes
+
+- [`47ce745`](https://github.com/ixoworld/ecs-oracle/commit/47ce74535e73901513ac82d2ce6f512dfea320fa) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Update mcp whitelist
+
 ## 2.0.4
 
 ### Patch Changes
