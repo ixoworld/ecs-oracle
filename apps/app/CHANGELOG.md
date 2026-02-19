@@ -1,5 +1,11 @@
 # app
 
+## 2.0.6
+
+### Patch Changes
+
+- [`45e3aec`](https://github.com/ixoworld/ecs-oracle/commit/45e3aec1aa67ae4eb00bf2923b712ca8549f59fb) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - update whitelist
+
 ## 2.0.5
 
 ### Patch Changes
