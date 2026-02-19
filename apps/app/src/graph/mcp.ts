@@ -37,7 +37,31 @@ const ALLOWED_MCP_DIDS: string[] = [
   'did:ixo:ixo1d82np5420yfa2nqwczgqkukgves49alv3v5uag', // Alwyn
   'did:ixo:ixo1m30l6lnw2nxuhhluwq7r0xw39l4mwy98xcpc96', // Joshua
   'did:ixo:ixo1ym5fc0m0gnggh0zde69qpmd9fnlxk75zrulj6c', // Annie
-  'did:ixo:ixo1hcw9z35r5x2vjvpt57q865lt0qwqtedh79rlj0' // Bupe
+  'did:ixo:ixo1hcw9z35r5x2vjvpt57q865lt0qwqtedh79rlj0', // Bupe
+  'did:ixo:ixo1tndv5ev5f2wyak0wdaxqfgjay3vg3jegfq0lcn', // Mosho
+  'did:ixo:ixo139le0z4tum5wauac9xs4jj39zulf8umqyx60xv', // Evans Kalunga
+  'did:ixo:ixo1hpe7t47zwz4p4a8s6dsuqhz702h4ar28qs3hc4', // Josephine Chime
+  'did:ixo:ixo1n3jplcy9htchsv67ll92a426kxchqd56yu3z0f', // Cherister Choongo
+  'did:ixo:ixo15ej8r2gd6a0x95z74ys0zkha9uqzg5kxnpemzy', // Christine Hill
+  'did:ixo:ixo1erj3wzva95stz8reht7rqsma2ka8lanepelw2q', // Mattias Ohlson
+  'did:ixo:ixo1rpm9fz3vkcdlnagchawjytzkjjcqlmwamz8vnf', // Towela Nyrienda
+  'did:ixo:ixo1xatjpmm2kw4ujfyqzhucrmgp8prxu6au6mvhqr', // Marion Peterson
+  'did:ixo:ixo19yr5c894mnhtnr2dm676y04j58p9jupk2nfnu3', // George Kalipenta
+  'did:ixo:ixo1079guw4qpz8ymcfp6vcunf8gzxu5u3clggdc8e', // Chipo Bukowa
+  'did:ixo:ixo1gxshyw8lcz8wvu2s5waq0plqcu5ftu2sfhwag4', // Edina Kayewa
+  'did:ixo:ixo1sv72qcpzz7hjn9cf654vrzyvd983hz6tjagh0w', // Mercy Mbozi
+  'did:ixo:ixo18fsl6l2fnw2gtady92nkpa975aqstdmgjgusfk', // Maclaud Nchimunya
+  'did:ixo:ixo1dy2xhvvgwgslnvpf7dwevlzd3ug2ya08xezvc9', // Talopa Zulu
+  'did:ixo:ixo1ghqgl9qdd3rydpwp5chgras3hz8q6qkhryl93x', // Chella Kamina
+  'did:ixo:ixo1pjshp5vr6es5pagwyp97nrhh6ax2jepnemken0', // Harrison Teteka
+  'did:ixo:ixo1paf4a2c6kz9ndmhv5lv6hw4wrkxhrvehqwuyn3', // Nancy Katongo
+  'did:ixo:ixo1g39e9ehxtzqr3au6lqdlvawfyxcsgzy8flxamh', // Thandiwe Lungu
+  'did:ixo:ixo19el3sd7cyjzjap4scsg4x9f0fwdctp5vecjcxu', // Mumba Chabwe
+  'did:ixo:ixo1km8c4fpuh8zz6v53cpfcqllyeenyy2yawaxfsy', // Samuel Mulala
+  'did:ixo:ixo1cc0nqnnatxwqnwamz9pxhy754yklxvxsvm6vmh', // Chikondi Nanyangwe
+  'did:ixo:ixo1r06rh8z68geq9pdwrnts39gyk5sptppfne0tef', // Ebba Perbeck
+  'did:ixo:ixo1ay6upt9459drkd2x7l3mpvedc0n9tqefywqhy3', // Duncan Phiri
+  'did:ixo:ixo16ugu3hsfnuk80jvazgttlaw48h8se6teuz3v80', // Loveness Chibwe
 ];
 
 /**
