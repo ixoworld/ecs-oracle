@@ -280,7 +280,6 @@ Promise<ReactAgent<any, any, any, any>> => {
       ...sandboxTools,
       ...agActionTools,
       ...oracleRetrievalTools,
-      presentFilesTool,
       listSkillsTool,
       searchSkillsTool,
       callPortalAgentTool,
