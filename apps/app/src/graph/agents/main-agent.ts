@@ -3,15 +3,19 @@ import {
   jsonToYaml,
   parserActionTool,
   parserBrowserTool,
-  SearchEnhancedResponse,
+  type SearchEnhancedResponse,
+  type FactResult,
+  type EntityResult,
+  type EpisodeResult,
 } from '@ixo/common';
-import { IRunnableConfigWithRequiredFields } from '@ixo/matrix';
+import { OpenIdTokenProvider } from '@ixo/oracles-chain-client';
+import { type IRunnableConfigWithRequiredFields } from '@ixo/matrix';
 import { SqliteSaver } from '@ixo/sqlite-saver';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createAgent, ReactAgent, toolRetryMiddleware } from 'langchain';
-import { ENV } from 'src/config';
-import { UcanService } from 'src/ucan/ucan.service';
+import { createAgent, type ReactAgent, toolRetryMiddleware } from 'langchain';
+import { type ENV } from 'src/config';
+import { type UcanService } from 'src/ucan/ucan.service';
 import { createSafetyGuardrailMiddleware } from '../middlewares/safety-guardrail-middleware';
 import { createTokenLimiterMiddleware } from '../middlewares/token-limiter-middelware';
 import { createToolValidationMiddleware } from '../middlewares/tool-validation-middleware';
@@ -20,7 +24,7 @@ import {
   AI_ASSISTANT_PROMPT,
   SLACK_FORMATTING_CONSTRAINTS_CONTENT,
 } from '../nodes/chat-node/prompt';
-import { TMainAgentGraphState } from '../state';
+import { type TMainAgentGraphState } from '../state';
 import { contextSchema } from '../types';
 import { createDomainIndexerAgent } from './domain-indexer-agent';
 import { createEditorAgent } from './editor/editor-agent';
@@ -42,8 +46,6 @@ import {
   listSkillsTool,
   searchSkillsTool,
 } from '../nodes/tools-node/skills-tools';
-import { presentFilesTool } from './skills-agent/present-files-tool';
-
 interface InvokeMainAgentParams {
   state: Partial<TMainAgentGraphState>;
   config: IRunnableConfigWithRequiredFields;
@@ -71,33 +73,59 @@ const llm = getOpenRouterChatModel({
   },
 });
 
+const oracleMatrixBaseUrl = configService
+  .getOrThrow('MATRIX_BASE_URL')
+  .replace(/\/$/, '');
+
+const oracleOpenIdTokenProvider = new OpenIdTokenProvider({
+  matrixAccessToken: configService.getOrThrow(
+    'MATRIX_ORACLE_ADMIN_ACCESS_TOKEN',
+  ),
+  homeServerUrl: oracleMatrixBaseUrl,
+  matrixUserId: configService.getOrThrow('MATRIX_ORACLE_ADMIN_USER_ID'),
+});
+
 export const createMainAgent = async ({
   state,
   config,
   ucanService,
-}: InvokeMainAgentParams): Promise<ReactAgent<any, any, any, any>> => {
+}: InvokeMainAgentParams): // eslint-disable-next-line @typescript-eslint/no-explicit-any
+Promise<ReactAgent<any, any, any, any>> => {
   const msgFromMatrixRoom = Boolean(
     state.messages?.at(-1)?.additional_kwargs.msgFromMatrixRoom,
   );
 
-  const { configurable } = config as IRunnableConfigWithRequiredFields;
+  const { configurable } = config;
   const { matrix } = configurable?.configs ?? {};
-  Logger.log(`[createMainAgent] homeServerName: ${configurable.configs?.matrix.homeServerName}`);
-  const sandboxMCP = configurable.configs?.user.matrixOpenIdToken ? createMCPClient({
-    mcpServers: {
-      sandbox: {
-        type: 'http',
-        url: configService.getOrThrow('SANDBOX_MCP_URL'),
-        transport: 'http',
-        headers: {
-          Authorization: `Bearer ${configurable.configs?.user.matrixOpenIdToken}`,
-          'x-matrix-homeserver':
-            configurable.configs?.matrix.homeServerName ?? '',
-        },
-        },
-      },
-    })
-  : undefined;
+  Logger.log(
+    `[createMainAgent] homeServerName: ${configurable.configs?.matrix.homeServerName}`,
+  );
+  const oracleOpenIdToken = configurable.configs?.user.matrixOpenIdToken
+    ? await oracleOpenIdTokenProvider.getToken()
+    : undefined;
+  const sandboxMCP =
+    configurable.configs?.user.matrixOpenIdToken && oracleOpenIdToken
+      ? createMCPClient({
+          mcpServers: {
+            sandbox: {
+              type: 'http',
+              url: configService.getOrThrow('SANDBOX_MCP_URL'),
+              transport: 'http',
+              headers: {
+                Authorization: `Bearer ${configurable.configs?.user.matrixOpenIdToken}`,
+                'x-matrix-homeserver':
+                  configurable.configs?.matrix.homeServerName ?? '',
+                'X-oracle-openid-token': oracleOpenIdToken,
+                'x-oracle-homeserver': oracleMatrixBaseUrl.replace(
+                  /^https?:\/\//,
+                  '',
+                ),
+              },
+            },
+          },
+          defaultToolTimeout: 180_000,
+        })
+      : undefined;
   Logger.log(`msgFromMatrixRoom: ${msgFromMatrixRoom}`);
 
   // Extract timezone and current time from config
@@ -245,6 +273,7 @@ export const createMainAgent = async ({
 
   const agent = createAgent({
     model: llm,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     contextSchema: contextSchema as any,
     tools: [
       ...mcpTools,
@@ -300,28 +329,28 @@ const formatTimeContext = (
 };
 
 // Helper function to format SearchEnhancedResponse into readable context
-const formatContextData = (data: SearchEnhancedResponse | undefined) => {
+const _formatContextData = (data: SearchEnhancedResponse | undefined) => {
   if (!data) return 'No specific information available.';
 
   let context = '';
 
   if (data.facts && data.facts.length > 0) {
     context += '**Key Facts:**\n';
-    data.facts.slice(0, 3).forEach((fact: any) => {
+    data.facts.slice(0, 3).forEach((fact: FactResult) => {
       context += `- ${fact.fact}\n`;
     });
   }
 
   if (data.entities && data.entities.length > 0) {
     context += '\n**Relevant Entities:**\n';
-    data.entities.slice(0, 3).forEach((entity: any) => {
+    data.entities.slice(0, 3).forEach((entity: EntityResult) => {
       context += `- ${entity.name}: ${entity.summary}\n`;
     });
   }
 
   if (data.episodes && data.episodes.length > 0) {
     context += '\n**Recent Episodes:**\n';
-    data.episodes.slice(0, 2).forEach((episode: any) => {
+    data.episodes.slice(0, 2).forEach((episode: EpisodeResult) => {
       context += `- ${episode.name}: ${episode.content.substring(0, 100)}...\n`;
     });
   }

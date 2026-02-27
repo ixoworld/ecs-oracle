@@ -19,7 +19,6 @@ import { gunzip, gzip } from 'node:zlib';
 
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
 import path from 'path';
-import { ENV } from 'src/config';
 import {
   deleteMediaFromRoom,
   getMediaFromRoom,
@@ -28,18 +27,53 @@ import {
   MatrixMediaEvent,
   uploadMediaToRoom,
 } from './matrix-upload-utils';
+import { type BaseSyncArgs } from './type';
+import { ENV } from '../config';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 
-const configService = new ConfigService<ENV>();
+/**
+ * Returns true if the error is permanent (data genuinely unrecoverable),
+ * meaning it's safe to create a fresh DB. All other errors are assumed
+ * transient and should propagate to prevent data loss.
+ */
+function isUnrecoverableDownloadError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
 
-/** Configure a SQLite connection with WAL mode and busy timeout for safe concurrent access */
-function configureSqliteConnection(db: DatabaseType): void {
-  db.pragma('journal_mode = WAL');
-  db.pragma('busy_timeout = 5000');
+  // Crypto/decryption failures from Rust NAPI layer (hash mismatch, invalid key, corrupt JSON)
+  // These mean the encrypted payload is broken — retrying won't help
+  const cryptoPatterns = [
+    /decrypt/i,
+    /hash/i,
+    /mismatch/i,
+    /base64/i,
+    /serde/i,
+    /invalid.*key/i,
+    /missing field/i,
+  ];
+
+  // Matrix-specific permanent errors
+  const matrixPatterns = [
+    /M_NOT_FOUND/, // media deleted/redacted from Matrix
+    /Event not found/, // event no longer exists
+    /not a media event/i, // event type mismatch
+    /mxcUrl.*does not begin/i, // malformed content.file.url
+    /M_FORBIDDEN/, // access permanently denied
+  ];
+
+  return [...cryptoPatterns, ...matrixPatterns].some((p) => p.test(message));
 }
 
+const configService = new ConfigService<ENV>();
+
+/** Configure a SQLite connection with busy timeout for safe concurrent access */
+/** Configure a SQLite connection with pragmas for safe concurrent access on VPS */
+function configureSqliteConnection(db: DatabaseType): void {
+  db.pragma('journal_mode = DELETE');
+  db.pragma('busy_timeout = 5000');
+  db.pragma('synchronous = NORMAL');
+}
 @Injectable()
 export class UserMatrixSqliteSyncService implements OnModuleInit {
   private static instance: UserMatrixSqliteSyncService;
@@ -64,6 +98,7 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
         'file_events.db',
       ),
     );
+    configureSqliteConnection(this.fileEventsDatabase);
   }
 
   private readonly filePathCache = new Map<
@@ -86,7 +121,10 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
   private readonly activeUsers = new Map<string, number>();
 
   private readonly downloadInProgress = new Map<string, Promise<void>>();
-  private readonly recoveryInProgress = new Map<string, Promise<DatabaseType>>();
+  private readonly recoveryInProgress = new Map<
+    string,
+    Promise<DatabaseType>
+  >();
 
   private readonly lastUploadedChecksum = new Map<string, string>();
 
@@ -110,7 +148,6 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
   private isUserActive(userDid: string): boolean {
     return (this.activeUsers.get(userDid) ?? 0) > 0;
   }
-
   static createUserStorageKey(userDid: string): string {
     const key = `checkpoint_${userDid}_${configService.getOrThrow('ORACLE_DID')}`;
     return createHash('sha256').update(key).digest('hex').substring(0, 17);
@@ -343,13 +380,10 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
       const result = db.pragma('integrity_check') as Array<{
         integrity_check: string;
       }>;
-      const isOk =
-        result.length === 1 && result[0].integrity_check === 'ok';
+      const isOk = result.length === 1 && result[0].integrity_check === 'ok';
 
       if (!isOk) {
-        const details = result
-          .map((r) => r.integrity_check)
-          .join('; ');
+        const details = result.map((r) => r.integrity_check).join('; ');
         Logger.error(
           `[CORRUPTION DETECTED] PRAGMA integrity_check failed for user ${userDid}: ${details}`,
         );
@@ -408,8 +442,8 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
       );
     }
 
-    // Delete local file + WAL/SHM files
-    for (const suffix of ['', '-wal', '-shm', '.tmp']) {
+    // Delete local file + temp files + leftover WAL/SHM/journal files
+    for (const suffix of ['', '.tmp', '-wal', '-shm', '-journal']) {
       try {
         await fs.unlink(dbPath + suffix);
       } catch {
@@ -417,7 +451,6 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
       }
     }
   }
-
   private initializeSessionsAndCallsTables(db: DatabaseType): void {
     db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
@@ -448,7 +481,9 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
   @Cron(CronExpression.EVERY_HOUR)
   public async localStorageCacheCleanUpTask(): Promise<void> {
     if (this.cronRunning) {
-      Logger.debug('Skipping hourly cleanup — another cron task is still running');
+      Logger.debug(
+        'Skipping hourly cleanup — another cron task is still running',
+      );
       return;
     }
     this.cronRunning = true;
@@ -487,7 +522,9 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
         { lastAccessedAt },
       ] of this.filePathCache.entries()) {
         if (this.isUserActive(userDid)) {
-          Logger.debug(`Skipping file cache cleanup for active user ${userDid}`);
+          Logger.debug(
+            `Skipping file cache cleanup for active user ${userDid}`,
+          );
           continue;
         }
         if (now - lastAccessedAt > hours(1)) {
@@ -622,40 +659,67 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
 
     let userDB: GetMediaFromRoomByStorageKeyResult | null = null;
 
-    const cachedEventText = this.fileEventsDatabase
-      .prepare('SELECT event FROM file_events WHERE storage_key = ?')
-      .get(storageKey) as { event: string } | undefined;
-
-    const cachedEvent = cachedEventText
-      ? (JSON.parse(cachedEventText.event) as MatrixMediaEvent)
-      : undefined;
-    if (cachedEvent) {
-      const result = await getMediaFromRoom(undefined, undefined, cachedEvent);
-      userDB = {
-        ...result,
-        contentInfo: {
-          ...result.contentInfo,
-          storageKey,
-        },
-      };
-    } else {
-      const mxManager = MatrixManager.getInstance();
-      const userHomeServer = await getMatrixHomeServerCroppedForDid(userDid);
-      const { roomId } = await mxManager.getOracleRoomIdWithHomeServer({
-        userDid: userDid,
-        oracleEntityDid: configService.getOrThrow('ORACLE_ENTITY_DID'),
-        userHomeServer,
-      });
-
-      if (!roomId) {
-        throw new NotFoundException('Room not found or Invalid Session Id');
-      }
-
-      Logger.debug(
-        `Downloading checkpoint from Matrix room ${roomId} for user ${userDid}`,
+    // Step 1: Try cached event lookup (local SQLite — independent concern)
+    let cachedEvent: MatrixMediaEvent | undefined;
+    try {
+      const cachedEventText = this.fileEventsDatabase
+        .prepare('SELECT event FROM file_events WHERE storage_key = ?')
+        .get(storageKey) as { event: string } | undefined;
+      cachedEvent = cachedEventText
+        ? (JSON.parse(cachedEventText.event) as MatrixMediaEvent)
+        : undefined;
+    } catch (cacheError) {
+      // file_events.db corrupt or locked — skip cache, fall through to direct Matrix lookup
+      Logger.warn(
+        `Failed to read cached event for user ${userDid}, falling through to Matrix lookup: ${cacheError instanceof Error ? cacheError.message : String(cacheError)}`,
       );
-      // load from matrix
-      userDB = await getMediaFromRoomByStorageKey(roomId, storageKey);
+    }
+
+    // Step 2: Download from Matrix
+    try {
+      if (cachedEvent) {
+        const result = await getMediaFromRoom(
+          undefined,
+          undefined,
+          cachedEvent,
+        );
+        userDB = {
+          ...result,
+          contentInfo: {
+            ...result.contentInfo,
+            storageKey,
+          },
+        };
+      } else {
+        const mxManager = MatrixManager.getInstance();
+        const userHomeServer = await getMatrixHomeServerCroppedForDid(userDid);
+        const { roomId } = await mxManager.getOracleRoomIdWithHomeServer({
+          userDid,
+          oracleEntityDid: configService.getOrThrow('ORACLE_ENTITY_DID'),
+          userHomeServer,
+        });
+
+        if (!roomId) {
+          throw new NotFoundException('Room not found or Invalid Session Id');
+        }
+
+        Logger.debug(
+          `Downloading checkpoint from Matrix room ${roomId} for user ${userDid}`,
+        );
+        userDB = await getMediaFromRoomByStorageKey(roomId, storageKey);
+      }
+    } catch (error) {
+      if (isUnrecoverableDownloadError(error)) {
+        // Permanent failure — data genuinely unrecoverable, safe to start fresh
+        Logger.warn(
+          `Unrecoverable download failure for user ${userDid}, will start with fresh database: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return;
+      }
+      // Transient/unknown error — let it propagate so the request fails with 500
+      // and the user retries later. This prevents creating an empty DB that would
+      // overwrite the good Matrix backup on the next upload cron cycle.
+      throw error;
     }
 
     if (!userDB) {
@@ -673,7 +737,7 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
       Logger.log(
         `Decompressed checkpoint for user ${userDid}: ${bytesToHumanReadable(userDB.mediaBuffer.length)} -> ${bytesToHumanReadable(decompressedBuffer.length)}`,
       );
-    } catch (error) {
+    } catch (_error) {
       // Decompression failed — check if the raw buffer is a valid uncompressed SQLite file
       if (
         userDB.mediaBuffer.length >= 16 &&
@@ -766,50 +830,18 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
     const cached = this.dbConnectionCache.get(userDid);
     if (cached) {
       if (this.isUserActive(userDid)) {
-        // User has an in-flight request — WAL checkpoint flushes data without closing
-        try {
-          const walResult = cached.db.pragma('wal_checkpoint(PASSIVE)') as Array<{
-            busy: number;
-            log: number;
-            checkpointed: number;
-          }>;
-          const { busy, log, checkpointed } = walResult[0] ?? {};
-          if (busy) {
-            // Another connection is writing — skip this upload cycle
-            Logger.debug(
-              `WAL checkpoint busy for active user ${userDid}, skipping upload`,
-            );
-            return;
-          }
-          if (log != null && checkpointed != null && log !== checkpointed) {
-            // PASSIVE couldn't flush all WAL pages — checksum would be computed on
-            // incomplete data, so skip this upload cycle to avoid a stale checksum.
-            Logger.debug(
-              `WAL checkpoint incomplete for active user ${userDid} (${checkpointed}/${log} pages), skipping upload`,
-            );
-            return;
-          }
-          Logger.debug(
-            `WAL checkpoint (passive) for active user ${userDid} before upload`,
-          );
-        } catch (error) {
-          // WAL checkpoint failure for an active user — skip upload but keep the
-          // connection in cache. The user's in-flight request still holds a reference
-          // to this DB handle, so closing/removing it would cause errors. The connection
-          // will be refreshed on the next cron cycle after the user becomes inactive.
-          Logger.warn(
-            `WAL checkpoint failed for active user ${userDid}, skipping upload to avoid stale data: ${error}`,
-          );
-          return;
-        }
+        // User has an in-flight request — in DELETE journal mode the DB file may be
+        // inconsistent mid-transaction, so skip upload. Next cron cycle will pick it up.
+        Logger.debug(
+          `Skipping upload for active user ${userDid}, will retry next cycle`,
+        );
+        return;
       } else {
         // No active request — safe to close
         try {
           cached.db.close();
           this.dbConnectionCache.delete(userDid);
-          Logger.debug(
-            `Closed cached database connection for user ${userDid}`,
-          );
+          Logger.debug(`Closed cached database connection for user ${userDid}`);
         } catch (error) {
           Logger.warn(
             `Failed to close cached database connection for user ${userDid}: ${error}`,
@@ -819,7 +851,6 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
     }
 
     // Compute checksum via streaming to avoid loading the entire DB into memory.
-    // This runs AFTER the WAL flush above so the .db file reflects the latest data.
     // Streaming reads ~64KB chunks at a time instead of the full file (which can be 100MB+).
     const currentChecksum = await computeFileChecksum(checkpointPath);
     const lastChecksum = this.lastUploadedChecksum.get(storageKey);
@@ -853,7 +884,7 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
     const mxManager = MatrixManager.getInstance();
     const userHomeServer = await getMatrixHomeServerCroppedForDid(userDid);
     const { roomId } = await mxManager.getOracleRoomIdWithHomeServer({
-      userDid: userDid,
+      userDid,
       oracleEntityDid: configService.getOrThrow('ORACLE_ENTITY_DID'),
       userHomeServer,
     });
@@ -904,8 +935,18 @@ export class UserMatrixSqliteSyncService implements OnModuleInit {
           Logger.error(
             `Failed to upload checkpoint to Matrix storage for user ${userDid}`,
             error.message,
-            "File path: " + UserMatrixSqliteSyncService.getUserCheckpointDbPath(userDid),
-            "File Size before gzip: " + bytesToHumanReadable(await fs.stat(UserMatrixSqliteSyncService.getUserCheckpointDbPath(userDid)).then((stats) => stats.size)),
+            'File path: ' +
+              UserMatrixSqliteSyncService.getUserCheckpointDbPath(userDid),
+            'File Size before gzip: ' +
+              bytesToHumanReadable(
+                await fs
+                  .stat(
+                    UserMatrixSqliteSyncService.getUserCheckpointDbPath(
+                      userDid,
+                    ),
+                  )
+                  .then((stats) => stats.size),
+              ),
           );
         }
       }
@@ -1053,7 +1094,6 @@ function computeFileChecksum(filePath: string): Promise<string> {
     });
   });
 }
-
 const bytesToHumanReadable = (bytes: number): string => {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const index = Math.floor(Math.log(bytes) / Math.log(1024));

@@ -1,8 +1,11 @@
 {
   "name": "@ixo/matrix",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "type": "module",
-  "private": true,
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "module": "./dist/src/index.js",
@@ -10,9 +13,8 @@
     "build": "tsc --project tsconfig.json",
     "clean": "rimraf dist",
     "prebuild": "npm run clean",
-    "test": "jest -c jest.config.js",
-    "test:watch": "jest --watch -c jest.config.js",
-    "test:e2e": "jest -c jest.integration.config.js --forceExit --detectOpenHandles"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "exports": {
     ".": {
@@ -31,18 +33,14 @@
   ],
   "devDependencies": {
     "@ixo/eslint-config": "workspace:*",
-    "@ixo/jest-config": "workspace:*",
     "@ixo/typescript-config": "workspace:*",
-    "@jest/types": "^29.6.3",
+    "@ixo/vitest-config": "workspace:*",
     "@langchain/core": "1.0.6",
     "@langchain/langgraph": "^1.0.2",
     "@langchain/langgraph-checkpoint-validation": "^1.0.0",
     "@testcontainers/postgresql": "^10.16.0",
-    "@types/jest": "^29.5.14",
-    "jest": "^29.7.0",
     "rimraf": "^6.0.1",
     "testcontainers": "^10.16.0",
-    "ts-jest": "^29.1.2",
     "typescript": "^5.3.3"
   },
   "dependencies": {
@@ -50,7 +48,7 @@
     "@langchain/langgraph-checkpoint": "^1.0.0",
     "dotenv": "^17.2.0",
     "marked": "^16.4.0",
-    "matrix-bot-sdk": "^0.7.1",
+    "matrix-bot-sdk": "npm:@ixo/matrix-bot-sdk@^0.8.0-ixo.5",
     "matrix-js-sdk": "^37.11.0",
     "superjson": "1.13.3"
   }
