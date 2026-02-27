@@ -1,5 +1,11 @@
 # app
 
+## 2.1.0
+
+### Minor Changes
+
+- [`2d8754d`](https://github.com/ixoworld/ecs-oracle/commit/2d8754daec7dbb2998753395f164385fa7a23669) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Merge boilerplate main
+
 ## 2.0.6
 
 ### Patch Changes
