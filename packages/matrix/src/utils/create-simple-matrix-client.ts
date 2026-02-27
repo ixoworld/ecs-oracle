@@ -9,7 +9,7 @@ import {
   SimpleFsStorageProvider,
   UserID,
 } from 'matrix-bot-sdk';
-import * as sdk from 'matrix-js-sdk';
+import type * as sdk from 'matrix-js-sdk';
 import * as path from 'node:path';
 import { createMatrixClient } from './mx.js';
 
@@ -19,6 +19,7 @@ export interface ISimpleMatrixClientConfig {
   userId: string;
   storagePath?: string;
   autoJoin?: boolean;
+  recoveryKey?: string;
 }
 
 export interface IMessageOptions {
@@ -82,20 +83,26 @@ export class SimpleMatrixClient {
   }
 
   private prepareCryptoStorage(): void {
-    // Prepare a crypto store using Rust SDK
+    // Prepare a crypto store using Rust SDK with SQLite backend
+    // Using numeric value 0 for StoreType.Sqlite (const enum, not accessible with isolatedModules)
     const storagePath = this.config.storagePath || './matrix-storage';
     this.cryptoStore = new RustSdkCryptoStorageProvider(
-      path.join(storagePath, 'encrypted'),
+      path.join(storagePath, 'encrypted-sqlite'),
+      0, // StoreType.Sqlite from @ixo/matrix-sdk-crypto-nodejs
     );
   }
 
   private createClient(): void {
     if (!this.storage) throw new Error('Storage not prepared');
+    const cryptoConfig = this.config.recoveryKey
+      ? { recoveryKey: this.config.recoveryKey }
+      : undefined;
     this.mxClient = new MatrixClient(
       this.config.baseUrl,
       this.config.accessToken,
       this.storage,
       this.cryptoStore,
+      cryptoConfig,
     );
   }
 
@@ -144,7 +151,7 @@ export class SimpleMatrixClient {
     if (!this.isStarted) return;
 
     try {
-      await this.mxClient.stop();
+      this.mxClient.stop();
       this.isStarted = false;
       Logger.info('✅ Matrix client stopped');
     } catch (error) {
@@ -203,7 +210,7 @@ export class SimpleMatrixClient {
   public async sendStateEvent(
     roomId: string,
     eventType: string,
-    content: any,
+    content: Record<string, unknown>,
     stateKey = '',
   ): Promise<string> {
     if (!this.isStarted) {
@@ -279,7 +286,7 @@ export class SimpleMatrixClient {
       event: MessageEvent<MessageEventContent>,
     ) => void,
   ): () => void {
-    const fn = (roomId: string, event: any) => {
+    const fn = (roomId: string, event: Record<string, unknown>) => {
       const message = new MessageEvent(event);
       if (!message) return;
 
@@ -297,7 +304,7 @@ export class SimpleMatrixClient {
    */
   public removeListener(
     event: string,
-    callback: (...args: any[]) => void,
+    callback: (...args: unknown[]) => void,
   ): void {
     this.mxClient.removeListener(event, callback);
   }
@@ -429,7 +436,7 @@ export class SimpleMatrixClient {
         type: 'm.id.user',
         user: userId,
       },
-      password: password,
+      password,
     };
   }
 }

@@ -14,7 +14,6 @@ import { getMatrixHomeServerCroppedForDid } from '@ixo/oracles-chain-client';
 import {
   ActionCallEvent,
   ReasoningEvent,
-  RenderComponentEvent,
   ToolCallEvent,
 } from '@ixo/oracles-events';
 
@@ -133,7 +132,6 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
         return rootEventId;
       }
 
-      // eslint-disable-next-line no-await-in-loop -- this is a loop function
       const parentEvent = await this.matrixManager.getEventById<{
         'm.relates_to'?: {
           'm.in_reply_to'?: {
@@ -146,7 +144,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
         parentEvent.content['m.relates_to']?.['m.in_reply_to']?.event_id;
       if (!parentInReplyTo) {
         // Found the root!
-        // eslint-disable-next-line @typescript-eslint/no-loop-func -- this is a loop function
+
         pathToCache.forEach((id) => {
           this.threadRootCache.set(id, currentEventId);
         });
@@ -364,7 +362,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
             params.res,
             async () => {
               // send thinking event to give the user faster feedback
-              const thinkingEvent = ReasoningEvent.createChunk(
+              const _thinkingEvent = ReasoningEvent.createChunk(
                 sessionId,
                 runnableConfig.configurable.requestId ?? '',
                 'Thinking...',
@@ -402,8 +400,9 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
                   `[streamMessage] AG-UI actions registered: ${Array.from(agActionNames).join(', ') || 'none'}`,
                 );
 
+                // eslint-disable-next-line no-useless-catch
                 try {
-                  for await (const { data, event, tags } of stream) {
+                  for await (const { data, event, tags: _tags } of stream) {
                     const isChatNode = true;
 
                     if (event === 'on_tool_end') {
@@ -491,36 +490,6 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
                             ),
                           );
                         }
-                        // If present_files tool: also dispatch render_component for artifactPreview
-                        if (
-                          toolMessage.name === 'present_files' &&
-                          !params.res.writableEnded &&
-                          !abortController.signal.aborted
-                        ) {
-                          const toolArgs = toolCallEvent.payload.args as Record<
-                            string,
-                            unknown
-                          >;
-                          const renderPayload = {
-                            sessionId,
-                            requestId:
-                              runnableConfig.configurable.requestId ?? '',
-                            componentName: 'ArtifactPreview',
-                            args: {
-                              title: toolArgs.title,
-                              fileType: toolArgs.fileType,
-                              url: toolArgs.artifactUrl,
-                            },
-                            status: 'done' as const,
-                            eventId: toolMessage.tool_call_id,
-                          };
-                          params.res.write(
-                            formatSSE(
-                              RenderComponentEvent.eventName,
-                              renderPayload,
-                            ),
-                          );
-                        }
                         toolCallMap.delete(toolMessage.tool_call_id);
                         continue;
                       }
@@ -533,14 +502,19 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
 
                       // Extract reasoning tokens from raw response
                       const rawResponse = (data.chunk as AIMessageChunk)
-                        .additional_kwargs?.__raw_response as any;
-                      if (
-                        rawResponse?.choices?.[0]?.delta?.reasoning &&
-                        isChatNode
-                      ) {
-                        const reasoning =
-                          rawResponse.choices[0].delta.reasoning;
-
+                        .additional_kwargs?.__raw_response as
+                        | {
+                            choices?: Array<{
+                              delta?: {
+                                reasoning?: string;
+                                reasoning_details?: unknown;
+                              };
+                            }>;
+                          }
+                        | undefined;
+                      const reasoning =
+                        rawResponse?.choices?.[0]?.delta?.reasoning;
+                      if (reasoning && isChatNode) {
                         if (reasoning && reasoning.trim()) {
                           // Use cleanAdditionalKwargs to extract and clean reasoning details
                           const cleanedKwargs = cleanAdditionalKwargs(
@@ -655,7 +629,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
                         continue;
                       }
                       if (isChatNode) {
-                        fullContent += content.toString();
+                        fullContent += String(content);
                         // Send message chunk as SSE
                         if (!params.res) {
                           throw new Error('Response not found');
@@ -666,7 +640,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
                         ) {
                           params.res.write(
                             formatSSE('message', {
-                              content: content.toString(),
+                              content: String(content),
                               timestamp: new Date().toISOString(),
                             }),
                           );
@@ -806,7 +780,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
       if (!params.msgFromMatrixRoom) {
         this.sessionManagerService.matrixManger
           .sendMessage({
-            message: lastMessage.content.toString(),
+            message: String(lastMessage.content),
             roomId,
             threadId: sessionId,
             isOracleAdmin: true,
@@ -828,7 +802,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
       return {
         message: {
           type: lastMessage.getType(),
-          content: lastMessage.content.toString(),
+          content: String(lastMessage.content),
           id: lastMessage.id ?? '',
         },
         sessionId,
@@ -852,7 +826,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
     targetSession: ChatSession,
   ): void {
     // Run in background without blocking
-    Promise.resolve().then(async () => {
+    void Promise.resolve().then(async () => {
       try {
         const { messages: currentMessages } = await this.listMessages({
           did: params.did,
@@ -987,11 +961,11 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
       userDid: did,
     });
 
-    const targetSession = (await this.sessionManagerService.getSession(
+    const targetSession = await this.sessionManagerService.getSession(
       sessionId,
       did,
       false,
-    )) as ChatSession | undefined;
+    );
 
     if (!targetSession) {
       throw new NotFoundException('Session not found');

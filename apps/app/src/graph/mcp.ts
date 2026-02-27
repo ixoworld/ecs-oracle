@@ -1,4 +1,7 @@
-import { ClientConfig, MultiServerMCPClient } from '@langchain/mcp-adapters';
+import {
+  type ClientConfig,
+  MultiServerMCPClient,
+} from '@langchain/mcp-adapters';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DynamicStructuredTool, type StructuredTool } from 'langchain';
@@ -122,7 +125,7 @@ export function parseMCPToolName(toolName: string): {
   // Fallback: treat as tool name only
   return {
     serverName: 'unknown',
-    toolName: toolName,
+    toolName,
   };
 }
 

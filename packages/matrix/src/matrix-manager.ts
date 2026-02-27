@@ -1,18 +1,23 @@
 import { Logger } from '@ixo/logger';
-import { MatrixEvent, MessageEvent, MessageEventContent } from 'matrix-bot-sdk';
+import {
+  type MatrixEvent,
+  type MessageEvent,
+  type MessageEventContent,
+} from 'matrix-bot-sdk';
 import * as sdk from 'matrix-js-sdk';
 import {
   MatrixStateManager,
   matrixStateManager,
 } from './matrix-state-manager/matrix-state-manager.js';
-import { IAction, type IMessageOptions } from './types/matrix.js';
+import { type IAction, type IMessageOptions } from './types/matrix.js';
 import { Cache } from './utils/cache.js';
 import {
   createSimpleMatrixClient,
-  ISimpleMatrixClientConfig,
-  SimpleMatrixClient,
+  type ISimpleMatrixClientConfig,
+  type SimpleMatrixClient,
 } from './utils/create-simple-matrix-client.js';
 import { formatMsg } from './utils/format-msg.js';
+import { extractBackupKeyFromSSS } from './utils/ssss.js';
 
 function getEntityRoomAliasFromDid(did: string) {
   return did.replace(/:/g, '-');
@@ -126,12 +131,38 @@ export class MatrixManager {
         '🚀 Starting MatrixManager initialization with matrix-bot-sdk...',
       );
 
+      // Try to extract backup key from SSSS for key backup support
+      let recoveryKey: string | undefined;
+      const recoveryPhrase = process.env.MATRIX_RECOVERY_PHRASE;
+      if (recoveryPhrase && recoveryPhrase !== 'secret') {
+        try {
+          const backupKey = await extractBackupKeyFromSSS({
+            baseUrl: process.env.MATRIX_BASE_URL!,
+            accessToken: process.env.MATRIX_ORACLE_ADMIN_ACCESS_TOKEN!,
+            userId: process.env.MATRIX_ORACLE_ADMIN_USER_ID!,
+            recoveryPhrase,
+          });
+          if (backupKey) {
+            recoveryKey = backupKey;
+            Logger.info(
+              '🔑 Backup key extracted from SSSS for key backup support',
+            );
+          }
+        } catch (e) {
+          Logger.warn(
+            'Could not extract backup key from SSSS (will proceed without):',
+            e,
+          );
+        }
+      }
+
       const config: ISimpleMatrixClientConfig = {
         baseUrl: process.env.MATRIX_BASE_URL!,
         accessToken: process.env.MATRIX_ORACLE_ADMIN_ACCESS_TOKEN!,
         userId: process.env.MATRIX_ORACLE_ADMIN_USER_ID!,
         storagePath: process.env.MATRIX_STORE_PATH!,
         autoJoin: true,
+        recoveryKey,
       };
 
       // Create client and start it
@@ -206,7 +237,7 @@ export class MatrixManager {
       throw new Error('Simple client not initialized');
     }
 
-    const fn = async (rmId: string, event: MatrixEvent<any>) => {
+    const fn = (rmId: string, event: MatrixEvent<T>) => {
       if (debug) {
         Logger.info('onRoomEvent', {
           roomId,
@@ -217,12 +248,8 @@ export class MatrixManager {
       if (rmId !== roomId) return;
 
       // Check if this is an encrypted event that failed to decrypt
-      if (event.type === 'm.room.encrypted' && !event.content?.body) {
-        return;
-      }
-
-      // Check if this is an encrypted event that failed to decrypt
-      if (event.type === 'm.room.encrypted' && !event.content?.body) {
+      const content = event.content as Record<string, unknown> | undefined;
+      if (event.type === 'm.room.encrypted' && !content?.body) {
         return;
       }
 
@@ -253,7 +280,11 @@ export class MatrixManager {
     roomAlias: string;
     oracleRoomFullAlias: string;
   }> {
-    return this.getOracleRoomIdWithHomeServer({ userDid, oracleEntityDid, userHomeServer: this.homeserverName });
+    return this.getOracleRoomIdWithHomeServer({
+      userDid,
+      oracleEntityDid,
+      userHomeServer: this.homeserverName,
+    });
   }
 
   /**
@@ -451,7 +482,7 @@ export class MatrixManager {
     });
   }
 
-  public async getEventById<T extends Object | unknown = unknown>(
+  public async getEventById<T extends object | unknown = unknown>(
     roomId: string,
     eventId: string,
   ): Promise<MatrixEvent<T>> {
@@ -528,7 +559,11 @@ export class MatrixManager {
       );
       await new Promise((resolve) => setTimeout(resolve, 1500));
 
-      const cryptoClient = (this.mxClient.mxClient as any)?.crypto;
+      const cryptoClient = (
+        this.mxClient.mxClient as unknown as Record<string, unknown>
+      )?.crypto as
+        | { engine?: { machine?: { close?: () => void } } }
+        | undefined;
       if (cryptoClient?.engine?.machine?.close) {
         Logger.info('MatrixManager graceful shutdown: closing crypto store...');
         cryptoClient.engine.machine.close();
