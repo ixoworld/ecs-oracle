@@ -1,5 +1,11 @@
 # app
 
+## 2.2.1
+
+### Patch Changes
+
+- [`ee41756`](https://github.com/ixoworld/ecs-oracle/commit/ee41756a0f0b7e1a72b5886b2b5b8fe36862c84e) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Update matrix dep
+
 ## 2.2.0
 
 ### Minor Changes
