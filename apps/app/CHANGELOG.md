@@ -1,5 +1,11 @@
 # app
 
+## 2.2.2
+
+### Patch Changes
+
+- [`5c26661`](https://github.com/ixoworld/ecs-oracle/commit/5c26661df716a41f35a02b541abf72d620e71609) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Update @ixo/common dep
+
 ## 2.2.1
 
 ### Patch Changes
