@@ -1,5 +1,11 @@
 # app
 
+## 2.2.0
+
+### Minor Changes
+
+- [`e11d3d6`](https://github.com/ixoworld/ecs-oracle/commit/e11d3d6fdeea8eb06bff051d4f38dac9b03e2287) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - Bump matrix to use sqlite
+
 ## 2.1.1
 
 ### Patch Changes
