@@ -1,0 +1,5 @@
+---
+'app': patch
+---
+
+smarter models
