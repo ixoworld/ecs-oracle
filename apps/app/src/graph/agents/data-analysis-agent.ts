@@ -17,7 +17,7 @@ import type { AgentSpec } from './subagent-as-tool';
 // Use fast MoE model for quick inference (~200 tok/s)
 // TODO: Add caching layer to avoid re-analyzing identical MCP tool response structures
 const llm = getOpenRouterChatModel({
-  model: 'openai/gpt-oss-120b:nitro', // Fast MoE model, ~200 tok/s
+  model: 'moonshotai/kimi-k2.5', // Fast MoE model, ~200 tok/s
   __includeRawResponse: true,
   modelKwargs: {
     require_parameters: true,
