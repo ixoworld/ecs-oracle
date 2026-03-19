@@ -1,5 +1,11 @@
 # app
 
+## 2.2.4
+
+### Patch Changes
+
+- [`8c9fd10`](https://github.com/ixoworld/ecs-oracle/commit/8c9fd10a6e178c2f1117e67fd87edee06666ea9f) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - temp remove safety middleware
+
 ## 2.2.3
 
 ### Patch Changes
