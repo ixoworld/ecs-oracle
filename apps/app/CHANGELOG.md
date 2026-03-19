@@ -1,5 +1,11 @@
 # app
 
+## 2.2.3
+
+### Patch Changes
+
+- [`189ebc6`](https://github.com/ixoworld/ecs-oracle/commit/189ebc6906d9b209a273a9ee87bf187174879d21) Thanks [@Michael-Ixo](https://github.com/Michael-Ixo)! - smarter models
+
 ## 2.2.2
 
 ### Patch Changes
