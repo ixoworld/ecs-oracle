@@ -264,7 +264,7 @@ Promise<ReactAgent<any, any, any, any>> => {
   const middleware = [
     createToolValidationMiddleware(),
     toolRetryMiddleware(),
-    createSafetyGuardrailMiddleware(),
+    // createSafetyGuardrailMiddleware(),
   ];
 
   if (!disableCredits) {
