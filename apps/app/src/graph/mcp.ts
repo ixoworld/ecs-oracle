@@ -65,6 +65,7 @@ const ALLOWED_MCP_DIDS: string[] = [
   'did:ixo:ixo1r06rh8z68geq9pdwrnts39gyk5sptppfne0tef', // Ebba Perbeck
   'did:ixo:ixo1ay6upt9459drkd2x7l3mpvedc0n9tqefywqhy3', // Duncan Phiri
   'did:ixo:ixo16ugu3hsfnuk80jvazgttlaw48h8se6teuz3v80', // Loveness Chibwe
+  'did:ixo:ixo1vd0kwtt8kqh93mk6jde9evs24uf038lswh86es', // Joshua
 ];
 
 /**
