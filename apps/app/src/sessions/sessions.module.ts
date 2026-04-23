@@ -4,6 +4,7 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { type ENV } from 'src/types';
 import { MessagesModule } from '../messages/messages.module';
+import { UcanModule } from '../ucan/ucan.module';
 import { CheckpointStorageSyncModule } from '../user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.module';
 import { UserMatrixSqliteSyncService } from '../user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
 import { SessionHistoryProcessor } from './session-history-processor.service';
@@ -11,7 +12,7 @@ import { SessionsController } from './sessions.controller';
 import { SessionsService } from './sessions.service';
 
 @Module({
-  imports: [MessagesModule, CheckpointStorageSyncModule],
+  imports: [MessagesModule, CheckpointStorageSyncModule, UcanModule],
   controllers: [SessionsController],
   providers: [
     SessionsService,
@@ -21,10 +22,7 @@ import { SessionsService } from './sessions.service';
       useFactory: (configService: ConfigService<ENV>) => {
         const memoryEngineUrl =
           configService.getOrThrow<string>('MEMORY_ENGINE_URL');
-        const memoryServiceApiKey = configService.getOrThrow<string>(
-          'MEMORY_SERVICE_API_KEY',
-        );
-        return new MemoryEngineService(memoryEngineUrl, memoryServiceApiKey);
+        return new MemoryEngineService(memoryEngineUrl);
       },
       inject: [ConfigService],
     },

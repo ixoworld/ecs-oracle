@@ -3,9 +3,17 @@ import {
   type ListChatSessionsResponseDto,
   SessionManagerService,
 } from '@ixo/common';
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { getMatrixHomeServerCroppedForDid } from '@ixo/oracles-chain-client';
+import { OpenIdTokenProvider } from '@ixo/oracles-chain-client';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { type ENV } from 'src/types';
+import { UcanService } from '../ucan/ucan.service';
 import { UserMatrixSqliteSyncService } from '../user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
 import { type CreateSessionDto } from './dto/create-session.dto'; // Import DTO
 import { type DeleteSessionDto } from './dto/delete-session.dto'; // Import DTO
@@ -19,6 +27,7 @@ export class SessionsService {
     private readonly configService: ConfigService<ENV>,
     private readonly sessionHistoryProcessor: SessionHistoryProcessor,
     private readonly syncService: UserMatrixSqliteSyncService,
+    @Optional() private readonly ucanService?: UcanService,
   ) {}
 
   async processPreviousSessionHistory(data: CreateSessionDto): Promise<void> {
@@ -41,6 +50,7 @@ export class SessionsService {
           did: data.did,
           oracleEntityDid,
           homeServer: data.homeServer,
+          userToken: data.userToken,
         })
         .catch((err) =>
           Logger.error(
@@ -76,6 +86,49 @@ export class SessionsService {
           this.syncService.markUserInactive(data.did);
         });
 
+      // Generate auth for memory engine — try UCAN first, fall back to Matrix OpenID
+      const oracleMatrixBaseUrl = this.configService
+        .getOrThrow<string>('MATRIX_BASE_URL')
+        .replace(/\/$/, '');
+
+      let oracleToken: string | undefined;
+      let memoryUcanInvocation: string | undefined;
+
+      if (this.ucanService?.hasSigningKey() && data.did) {
+        // Create UCAN invocation for memory engine
+        try {
+          const engineUrl = this.configService.getOrThrow('MEMORY_ENGINE_URL');
+          const invocation = await this.ucanService.createServiceInvocation(
+            engineUrl,
+            data.did,
+            'ixo:memory',
+          );
+          if (invocation) {
+            memoryUcanInvocation = invocation;
+          }
+        } catch (err) {
+          Logger.warn(
+            `[Session UCAN] Failed to create invocation: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
+      // Fall back to Matrix OpenID if no UCAN invocation
+      if (!memoryUcanInvocation && data.userToken) {
+        const oracleOpenIdTokenProvider = new OpenIdTokenProvider({
+          matrixAccessToken: this.configService.getOrThrow(
+            'MATRIX_ORACLE_ADMIN_ACCESS_TOKEN',
+          ),
+          homeServerUrl: oracleMatrixBaseUrl,
+          matrixUserId: this.configService.getOrThrow(
+            'MATRIX_ORACLE_ADMIN_USER_ID',
+          ),
+        });
+        oracleToken = await oracleOpenIdTokenProvider.getToken();
+      }
+
+      const oracleHomeServer = oracleMatrixBaseUrl.replace(/^https?:\/\//, '');
+
       const session = await this.sessionManager.createSession({
         did: data.did,
         homeServer: data.homeServer,
@@ -83,6 +136,11 @@ export class SessionsService {
         oracleEntityDid,
         oracleDid: this.configService.getOrThrow('ORACLE_DID'),
         slackThreadTs: data.slackThreadTs,
+        oracleToken,
+        userToken: data.userToken,
+        oracleHomeServer,
+        userHomeServer: data.homeServer,
+        ucanInvocation: memoryUcanInvocation,
       });
       return session;
     } catch (error) {
@@ -103,11 +161,24 @@ export class SessionsService {
   ): Promise<ListChatSessionsResponseDto> {
     this.syncService.markUserActive(data.did);
     try {
+      // Resolve the user's main room so we only return main-room sessions.
+      // Task-room sessions (created via Matrix in dedicated task channels)
+      // are filtered out — the portal only shows main conversations.
+      const userHomeServer =
+        data.homeServer || (await getMatrixHomeServerCroppedForDid(data.did));
+      const { roomId: mainRoomId } =
+        await this.sessionManager.matrixManger.getOracleRoomIdWithHomeServer({
+          userDid: data.did,
+          oracleEntityDid: this.configService.getOrThrow('ORACLE_ENTITY_DID'),
+          userHomeServer,
+        });
+
       const sessionsResult = await this.sessionManager.listSessions({
         did: data.did,
         oracleEntityDid: this.configService.getOrThrow('ORACLE_ENTITY_DID'),
         limit: data.limit ?? 20,
         offset: data.offset ?? 0,
+        roomId: mainRoomId ?? undefined,
       });
 
       return {
@@ -142,6 +213,7 @@ export class SessionsService {
           did: data.did,
           oracleEntityDid,
           homeServer: data.homeServer,
+          userToken: data.userToken,
         })
         .catch((err) =>
           Logger.error(

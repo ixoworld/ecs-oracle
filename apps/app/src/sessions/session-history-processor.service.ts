@@ -1,17 +1,22 @@
 import { MemoryEngineService, SessionManagerService } from '@ixo/common';
-import { getMatrixHomeServerCroppedForDid } from '@ixo/oracles-chain-client';
+import {
+  getMatrixHomeServerCroppedForDid,
+  OpenIdTokenProvider,
+} from '@ixo/oracles-chain-client';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cache } from 'cache-manager';
 import { MessagesService } from '../messages/messages.service';
 import { type ENV } from '../types';
+import { UcanService } from '../ucan/ucan.service';
 
 export interface ProcessSessionHistoryParams {
   sessionId: string;
   did: string;
   oracleEntityDid: string;
   homeServer?: string;
+  userToken?: string;
 }
 
 @Injectable()
@@ -24,6 +29,7 @@ export class SessionHistoryProcessor {
     private readonly sessionManagerService: SessionManagerService,
     private readonly configService: ConfigService<ENV>,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
+    @Optional() private readonly ucanService?: UcanService,
   ) {}
 
   /**
@@ -103,6 +109,7 @@ export class SessionHistoryProcessor {
     did,
     oracleEntityDid,
     homeServer,
+    userToken,
   }: ProcessSessionHistoryParams): Promise<void> {
     this.logger.debug(`Processing session history for session ${sessionId}`);
 
@@ -165,13 +172,66 @@ export class SessionHistoryProcessor {
       session.title ?? '',
     );
 
+    // Check if we have any auth method available (UCAN or Matrix OpenID)
+    if (!userToken && !this.ucanService?.hasSigningKey()) {
+      this.logger.warn(
+        `No user token and no UCAN signing key for session ${sessionId}, skipping memory engine processing`,
+      );
+      return;
+    }
+
+    const oracleMatrixBaseUrl = this.configService
+      .getOrThrow<string>('MATRIX_BASE_URL')
+      .replace(/\/$/, '');
+
+    const oracleOpenIdTokenProvider = new OpenIdTokenProvider({
+      matrixAccessToken: this.configService.getOrThrow(
+        'MATRIX_ORACLE_ADMIN_ACCESS_TOKEN',
+      ),
+      homeServerUrl: oracleMatrixBaseUrl,
+      matrixUserId: this.configService.getOrThrow(
+        'MATRIX_ORACLE_ADMIN_USER_ID',
+      ),
+    });
+
+    const oracleToken = await oracleOpenIdTokenProvider.getToken();
+    const oracleHomeServer = oracleMatrixBaseUrl.replace(/^https?:\/\//, '');
+
+    // Try UCAN invocation for memory engine, fall back to Matrix tokens
+    let memoryUcanInvocation: string | undefined;
+    if (this.ucanService?.hasSigningKey() && did) {
+      try {
+        const invocation = await this.ucanService.createServiceInvocation(
+          this.configService.getOrThrow('MEMORY_ENGINE_URL'),
+          did,
+          'ixo:memory',
+        );
+        if (invocation) {
+          memoryUcanInvocation = invocation;
+          this.logger.debug(
+            `[UCAN] Using UCAN invocation for memory engine history processing`,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(
+          `[UCAN] Failed to create memory engine invocation, falling back to Matrix: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    } else {
+      this.logger.warn(
+        `[Memory REST UCAN] Skipped — hasSigningKey=${this.ucanService?.hasSigningKey()}, did=${did ?? 'missing'}`,
+      );
+    }
+
     // Send to memory engine
-    const oracleDid = this.configService.getOrThrow<string>('ORACLE_DID');
     const result = await this.memoryEngineService.processConversationHistory({
       messages: transformedMessages,
-      userDid: did,
-      oracleDid,
       roomId,
+      oracleToken,
+      userToken: userToken ?? '',
+      oracleHomeServer,
+      userHomeServer,
+      ucanInvocation: memoryUcanInvocation,
     });
 
     if (!result.success) {

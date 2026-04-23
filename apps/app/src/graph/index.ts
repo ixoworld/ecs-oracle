@@ -1,47 +1,109 @@
 import { type IRunnableConfigWithRequiredFields } from '@ixo/matrix';
 import { Logger } from '@nestjs/common';
 import 'dotenv/config';
-import { HumanMessage } from 'langchain';
+import { type BaseMessage, HumanMessage } from 'langchain';
 import {
   type AgActionDto,
   type BrowserToolCallDto,
 } from 'src/messages/dto/send-message.dto';
 import { type UcanService } from 'src/ucan/ucan.service';
+import { type FileProcessingService } from 'src/messages/file-processing.service';
+import { type TasksService } from 'src/tasks/task.service';
 import { createMainAgent } from './agents/main-agent';
+import { getLLMProvider, getModelForRole } from './llm-provider';
 import { type MCPUCANContext } from './mcp';
 import { type TMainAgentGraphState } from './state';
 
 /**
  * Options for agent methods that support UCAN
  */
-interface UCANOptions {
+export interface UCANOptions {
   /** UCAN service for MCP tool authorization */
   ucanService?: UcanService;
   /** Map of tool names to serialized invocations */
   mcpInvocations?: Record<string, string>;
 }
 
+/**
+ * Options for {@link MainAgentGraph.sendMessage}
+ */
+export interface SendMessageOptions {
+  input: string | BaseMessage[];
+  runnableConfig: IRunnableConfigWithRequiredFields & {
+    configurable: { sessionId: string };
+  };
+  browserTools?: BrowserToolCallDto[];
+  msgFromMatrixRoom?: boolean;
+  initialUserContext?: TMainAgentGraphState['userContext'];
+  editorRoomId?: string;
+  currentEntityDid?: string;
+  clientType?: 'matrix' | 'slack';
+  ucanOptions?: UCANOptions;
+  fileProcessingService?: FileProcessingService;
+  spaceId?: string;
+  tasksService?: TasksService;
+}
+
+/**
+ * Options for {@link MainAgentGraph.streamMessage}
+ */
+export interface StreamMessageOptions {
+  input: string | BaseMessage[];
+  runnableConfig: IRunnableConfigWithRequiredFields & {
+    configurable: { sessionId: string };
+  };
+  browserTools?: BrowserToolCallDto[];
+  msgFromMatrixRoom?: boolean;
+  initialUserContext?: TMainAgentGraphState['userContext'];
+  abortController?: AbortController;
+  editorRoomId?: string;
+  currentEntityDid?: string;
+  clientType?: 'matrix' | 'slack';
+  agActions?: AgActionDto[];
+  ucanOptions?: UCANOptions;
+  fileProcessingService?: FileProcessingService;
+  spaceId?: string;
+  tasksService?: TasksService;
+}
+
 export class MainAgentGraph {
   async sendMessage(
-    input: string,
-    runnableConfig: IRunnableConfigWithRequiredFields & {
-      configurable: {
-        sessionId: string;
-      };
-    },
-    browserTools?: BrowserToolCallDto[],
-    msgFromMatrixRoom = false,
-    initialUserContext?: TMainAgentGraphState['userContext'],
-    editorRoomId?: string,
-    currentEntityDid?: string,
-    clientType?: 'matrix' | 'slack',
-    ucanOptions?: UCANOptions,
+    options: SendMessageOptions,
   ): Promise<Pick<TMainAgentGraphState, 'messages'>> {
+    const {
+      input,
+      runnableConfig,
+      browserTools,
+      msgFromMatrixRoom = false,
+      initialUserContext,
+      editorRoomId,
+      currentEntityDid,
+      clientType,
+      ucanOptions,
+      fileProcessingService,
+      spaceId,
+      tasksService,
+    } = options;
+
     if (!runnableConfig.configurable.sessionId) {
       throw new Error('sessionId is required');
     }
+
+    const messages: BaseMessage[] =
+      typeof input === 'string'
+        ? [
+            new HumanMessage({
+              content: input,
+              additional_kwargs: {
+                msgFromMatrixRoom,
+                timestamp: new Date().toISOString(),
+              },
+            }),
+          ]
+        : input;
+
     Logger.log(
-      `[sendMessage]: msgFromMatrixRoom: ${msgFromMatrixRoom} input: ${input}`,
+      `[sendMessage]: msgFromMatrixRoom: ${msgFromMatrixRoom} messages: ${messages.length}`,
     );
 
     // Build UCAN context if invocations are provided
@@ -51,23 +113,19 @@ export class MainAgentGraph {
         : undefined;
 
     const state = {
-      messages: [
-        new HumanMessage({
-          content: input,
-          // this is to prevent the matrix manager to log this message as this message is from the matrix room itself not from the REST api
-          additional_kwargs: {
-            msgFromMatrixRoom,
-            timestamp: new Date().toISOString(),
-          },
-        }),
-      ],
+      messages,
       browserTools,
       editorRoomId,
       currentEntityDid,
+      spaceId,
       client: clientType ?? 'portal',
       mcpUcanContext,
       ...(initialUserContext ? { userContext: initialUserContext } : {}),
     } satisfies Partial<TMainAgentGraphState>;
+
+    const configModelOverride = (
+      runnableConfig.configurable as Record<string, unknown>
+    ).modelOverride as string | undefined;
 
     const agent = await createMainAgent({
       state,
@@ -78,28 +136,30 @@ export class MainAgentGraph {
           ...runnableConfig.configurable,
           thread_id: runnableConfig.configurable.sessionId,
         },
-        metadata: {
-          langfuseSessionId: runnableConfig.configurable.sessionId,
-          langfuseUserId: runnableConfig.configurable.configs?.user.did,
-        },
       },
       ucanService: ucanOptions?.ucanService,
+      fileProcessingService,
+      modelOverride: configModelOverride,
+      tasksService,
     });
 
-    const result = await agent.invoke(
-      {
-        messages: [
-          new HumanMessage({
-            content: input,
-            // this is to prevent the matrix manager to log this message as this message is from the matrix room itself not from the REST api
-            additional_kwargs: {
-              msgFromMatrixRoom,
-              timestamp: new Date().toISOString(),
-            },
-          }),
-        ],
+    const invokeConfig = {
+      ...runnableConfig,
+      recursionLimit: 150,
+      configurable: {
+        ...runnableConfig.configurable,
+        thread_id: runnableConfig.configurable.sessionId,
       },
+    };
+
+    const result = await agent.invoke(
+      { messages, editorRoomId },
       {
+        ...invokeConfig,
+        metadata: {
+          llmProvider: getLLMProvider(),
+          llmModel: configModelOverride ?? getModelForRole('main'),
+        },
         context: {
           userDid: runnableConfig.configurable.configs?.user.did ?? '',
         },
@@ -112,22 +172,24 @@ export class MainAgentGraph {
     };
   }
 
-  async streamMessage(
-    input: string,
-    runnableConfig: IRunnableConfigWithRequiredFields & {
-      configurable: {
-        sessionId: string;
-      };
-    },
-    browserTools?: BrowserToolCallDto[],
-    msgFromMatrixRoom = false,
-    initialUserContext?: TMainAgentGraphState['userContext'],
-    abortController?: AbortController,
-    editorRoomId?: string,
-    currentEntityDid?: string,
-    agActions?: AgActionDto[],
-    ucanOptions?: UCANOptions,
-  ) {
+  async streamMessage(options: StreamMessageOptions) {
+    const {
+      input,
+      runnableConfig,
+      browserTools,
+      msgFromMatrixRoom = false,
+      initialUserContext,
+      abortController,
+      editorRoomId,
+      currentEntityDid,
+      clientType = 'portal',
+      agActions,
+      ucanOptions,
+      fileProcessingService,
+      spaceId,
+      tasksService,
+    } = options;
+
     if (!runnableConfig.configurable.sessionId) {
       throw new Error('sessionId is required');
     }
@@ -142,6 +204,19 @@ export class MainAgentGraph {
       });
     }
 
+    const messages: BaseMessage[] =
+      typeof input === 'string'
+        ? [
+            new HumanMessage({
+              content: input,
+              additional_kwargs: {
+                msgFromMatrixRoom,
+                timestamp: new Date().toISOString(),
+              },
+            }),
+          ]
+        : input;
+
     // Build UCAN context if invocations are provided
     const mcpUcanContext: MCPUCANContext | undefined =
       ucanOptions?.mcpInvocations
@@ -149,20 +224,12 @@ export class MainAgentGraph {
         : undefined;
 
     const state = {
-      messages: [
-        new HumanMessage({
-          content: input,
-          // this is to prevent the matrix manager to log this message as this message is from the matrix room itself not from the REST api
-          additional_kwargs: {
-            msgFromMatrixRoom,
-            timestamp: new Date().toISOString(),
-          },
-        }),
-      ],
+      messages,
       browserTools,
       editorRoomId,
       currentEntityDid,
-      client: 'portal',
+      spaceId,
+      client: clientType,
       mcpUcanContext,
       ...(initialUserContext ? { userContext: initialUserContext } : {}),
       agActions,
@@ -176,34 +243,23 @@ export class MainAgentGraph {
         configurable: {
           ...runnableConfig.configurable,
         },
-        metadata: {
-          langfuseSessionId: runnableConfig.configurable.sessionId,
-          langfuseUserId: runnableConfig.configurable.configs?.user.did,
-        },
       },
       ucanService: ucanOptions?.ucanService,
+      fileProcessingService,
+      tasksService,
     });
 
     const stream = agent.streamEvents(
-      {
-        messages: [
-          new HumanMessage({
-            content: input,
-            // this is to prevent the matrix manager to log this message as this message is from the matrix room itself not from the REST api
-            additional_kwargs: {
-              msgFromMatrixRoom,
-              timestamp: new Date().toISOString(),
-            },
-          }),
-        ],
-      },
+      { messages, editorRoomId },
       {
         version: 'v2',
         ...runnableConfig,
-        streamMode: 'messages',
+        streamMode: ['updates', 'messages'] as const,
         recursionLimit: 150,
         configurable: {
           ...runnableConfig.configurable,
+          llmProvider: getLLMProvider(),
+          llmModel: getModelForRole('main'),
         },
         context: {
           userDid: runnableConfig.configurable.configs?.user.did ?? '',
@@ -227,6 +283,7 @@ export class MainAgentGraph {
         browserTools: [],
         editorRoomId: undefined,
         currentEntityDid: undefined,
+        spaceId: undefined,
         client: 'portal',
         userContext: undefined,
       } satisfies Partial<TMainAgentGraphState>,

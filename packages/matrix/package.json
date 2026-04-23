@@ -1,6 +1,6 @@
 {
   "name": "@ixo/matrix",
-  "version": "1.2.1",
+  "version": "1.2.3",
   "type": "module",
   "private": false,
   "publishConfig": {
@@ -35,9 +35,9 @@
     "@ixo/eslint-config": "workspace:*",
     "@ixo/typescript-config": "workspace:*",
     "@ixo/vitest-config": "workspace:*",
-    "@langchain/core": "1.0.6",
-    "@langchain/langgraph": "^1.0.2",
-    "@langchain/langgraph-checkpoint-validation": "^1.0.0",
+    "@langchain/core": "^1.1.31",
+    "@langchain/langgraph": "^1.2.1",
+    "@langchain/langgraph-checkpoint-validation": "^1.0.9",
     "@testcontainers/postgresql": "^10.16.0",
     "rimraf": "^6.0.1",
     "testcontainers": "^10.16.0",
@@ -48,7 +48,7 @@
     "@langchain/langgraph-checkpoint": "^1.0.0",
     "dotenv": "^17.2.0",
     "marked": "^16.4.0",
-    "matrix-bot-sdk": "npm:@ixo/matrix-bot-sdk@^0.8.0-ixo.5",
+    "matrix-bot-sdk": "npm:@ixo/matrix-bot-sdk@^0.8.0-ixo.6",
     "matrix-js-sdk": "^37.11.0",
     "superjson": "1.13.3"
   }

@@ -1,14 +1,10 @@
-import { getOpenRouterChatModel } from '@ixo/common';
 import { RemoveMessage } from '@langchain/core/messages';
 import { Logger } from '@nestjs/common';
 import { type AgentMiddleware, AIMessage, createMiddleware } from 'langchain';
+import { getProviderChatModel } from '../llm-provider';
 
-const safetyModel = getOpenRouterChatModel({
-  model: 'openai/gpt-oss-safeguard-20b:nitro',
-  __includeRawResponse: true,
-  modelKwargs: {
-    require_parameters: true,
-  },
+const safetyModel = getProviderChatModel('guard', {
+  __includeRawResponse: false,
 });
 
 export const createSafetyGuardrailMiddleware = (): AgentMiddleware => {
@@ -24,6 +20,12 @@ export const createSafetyGuardrailMiddleware = (): AgentMiddleware => {
 
         const lastMessage = state.messages[state.messages.length - 1];
         if (lastMessage.type !== 'ai') {
+          return;
+        }
+
+        // Skip safety check for tool call messages (internal operations, not user-facing)
+        const aiMessage = lastMessage as AIMessage;
+        if (aiMessage.tool_calls && aiMessage.tool_calls.length > 0) {
           return;
         }
 
@@ -52,6 +54,10 @@ ALWAYS mark as SAFE if the response:
 - Describes general system functionality or capabilities
 - Mentions tool names or agent names in the context of explaining features
 - ALLOW AWS pre-signed url to be used in the response
+- Describes document/block editing operations (status updates, property changes, block creation/deletion)
+- References block IDs (UUIDs), block properties, or CRDT/Y.js synchronization
+- Contains URLs in the context of document block properties (kycUrl, redirectUrl, callback URLs)
+- Describes survey answers, form data, or workflow state changes
 `;
 
         const result = await safetyModel.invoke([
@@ -67,17 +73,10 @@ ALWAYS mark as SAFE if the response:
         ]);
 
         const safetyDecision = String(result.content).trim().toUpperCase();
-        Logger.log(`Safety decision: ${safetyDecision}`, {
-          userContent: userContent.substring(0, 100),
-          responsePreview: String(lastMessage.content).substring(0, 100),
-        });
+        Logger.log(`Safety decision: ${safetyDecision}`, {});
         if (safetyDecision.includes('UNSAFE')) {
           Logger.warn(
             'Unsafe response detected, blocking and returning safe message',
-            {
-              userContent: userContent.substring(0, 100),
-              responsePreview: String(lastMessage.content).substring(0, 100),
-            },
           );
           return {
             messages: [

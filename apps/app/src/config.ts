@@ -1,14 +1,5 @@
+import { ConfigService } from '@nestjs/config';
 import z from 'zod';
-
-export const oracleConfig = {
-  appName: '',
-  appPurpose: 'e-commerce store for selling products and services.',
-  appMainFeatures:
-    'The e-commerce store provides a range of features for selling products and services.',
-  appTargetUsers: 'The e-commerce store is targeted at customers.',
-  appUniqueSellingPoints:
-    'The e-commerce store is a platform for selling products and services.',
-};
 
 export const EnvSchema = z.object({
   NODE_ENV: z
@@ -17,24 +8,14 @@ export const EnvSchema = z.object({
   PORT: z.coerce.number().default(3000),
   ORACLE_NAME: z.string(),
 
-  // PostgreSQL
-  POSTGRES_USER: z.string().default('postgres'),
-  POSTGRES_HOST: z.string().default('localhost'),
-  POSTGRES_DB: z.string().default('knowledge'),
-  POSTGRES_PASSWORD: z.string().default('postgres'),
-  POSTGRES_PORT: z.string().default('5432'),
-
   // CORS
   CORS_ORIGIN: z.string().default('*'),
-
+  COMPOSIO_BASE_URL: z.url().default('https://composio.ixo.earth'),
+  COMPOSIO_API_KEY: z.string().optional(),
   // Langfuse
   LANGFUSE_SECRET_KEY: z.string().optional(),
   LANGFUSE_PUBLIC_KEY: z.string().optional(),
   LANGFUSE_HOST: z.string().optional(),
-
-  // Chroma
-  CHROMA_COLLECTION_NAME: z.string().default('knowledge'),
-  CHROMA_URL: z.string().default('http://localhost:8000'),
 
   // Slack
   SLACK_BOT_OAUTH_TOKEN: z.string().optional(),
@@ -46,8 +27,7 @@ export const EnvSchema = z.object({
   // Matrix
   MATRIX_BASE_URL: z.string(),
   MATRIX_RECOVERY_PHRASE: z.string(),
-  MATRIX_CRYPTO_STORE_PATH: z.string().default('./matrix-storage'),
-  MATRIX_STORE_PATH: z.string().default('./matrix-store-new'),
+  MATRIX_STORE_PATH: z.string().default('./matrix-storage'),
   MATRIX_ORACLE_ADMIN_ACCESS_TOKEN: z.string(),
   MATRIX_ORACLE_ADMIN_USER_ID: z.string(),
   MATRIX_ORACLE_ADMIN_PASSWORD: z.string(),
@@ -56,28 +36,33 @@ export const EnvSchema = z.object({
     .default('./matrix-secret-storage-keys-new2'),
   SKIP_LOGGING_CHAT_HISTORY_TO_MATRIX: z.string().optional(),
 
+  // LLM Provider selection: 'openrouter' (default) or 'nebius'
+  LLM_PROVIDER: z.enum(['openrouter', 'nebius']).default('openrouter'),
+
   // OpenAI - used by @ixo/common package
   OPENAI_API_KEY: z.string().optional(),
 
   // OpenRouter
-  OPEN_ROUTER_API_KEY: z.string(),
+  OPEN_ROUTER_API_KEY: z.string().optional(),
+
+  // Nebius Token Factory
+  NEBIUS_API_KEY: z.string().optional(),
 
   SUBSCRIPTION_ORACLE_MCP_URL: z.url().optional(),
   NETWORK: z.enum(['mainnet', 'testnet', 'devnet']),
   BLOCKSYNC_URI: z.string().optional(),
-  DATABASE_USE_SSL: z.string().default('false'),
+  BLOCKSYNC_GRAPHQL_URL: z.string(),
   SQLITE_DATABASE_PATH: z.string(),
   LIVE_AGENT_AUTH_API_KEY: z.string().optional().default(''),
   MEMORY_MCP_URL: z.url(),
   MEMORY_ENGINE_URL: z.url(),
-  MEMORY_SERVICE_API_KEY: z.string(),
   ORACLE_ENTITY_DID: z.string(),
   SUBSCRIPTION_URL: z.string().optional(),
   FIRECRAWL_MCP_URL: z.url(),
   ECS_MCP_URL: z.url(),
   ECS_MCP_AUTH_TOKEN: z.string(),
   DOMAIN_INDEXER_URL: z.url(),
-  REDIS_URL: z.string(),
+  REDIS_URL: z.string().optional(),
   SECP_MNEMONIC: z.string(),
   RPC_URL: z.string(),
   MATRIX_VALUE_PIN: z.string(),
@@ -89,8 +74,68 @@ export const EnvSchema = z.object({
 
   MATRIX_ACCOUNT_ROOM_ID: z.string(),
   SANDBOX_MCP_URL: z.url(),
+  SKILLS_CAPSULES_BASE_URL: z
+    .url()
+    .default('https://capsules.skills.ixo.earth'),
+
+  // Oracle operator secrets exposed to sandbox as x-os-* headers
+  // Format: "KEY1=value1,KEY2=value2"
+  ORACLE_SECRETS: z.string().default(''),
 });
+
+export const matrixAccountRoomId = {
+  mainnet: '!ekfOXRmXCdBkDaRDDr:mx.ixo.earth',
+  testnet: '!HLRUpfYhwoLYDSEVcX:testmx.ixo.earth',
+  devnet: '!RHtTYnmThqJKAPqYXR:devmx.ixo.earth',
+}[(process.env.NETWORK as keyof typeof matrixAccountRoomId) ?? 'devnet'];
 
 export type ENV = z.infer<typeof EnvSchema> & {
   ORACLE_DID: string;
 };
+
+/**
+ * Centralized config accessor. Works with both NestJS-injected ConfigService
+ * and standalone (module-level) usage via the singleton fallback.
+ *
+ * Usage:
+ *   const config = getConfig();          // standalone (reads from process.env)
+ *   const config = getConfig(injected);  // NestJS DI context
+ *
+ *   config.get('PORT')                   // returns value or undefined
+ *   config.getOrThrow('ORACLE_DID')      // throws if missing
+ */
+export function getConfig(configService?: ConfigService<ENV>) {
+  const svc = configService ?? singletonConfigService();
+  return {
+    get<K extends keyof ENV>(
+      key: K,
+      defaultValue?: ENV[K],
+    ): ENV[K] | undefined {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return svc.get(key as any, defaultValue);
+    },
+    getOrThrow<K extends keyof ENV>(key: K): ENV[K] {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return svc.getOrThrow(key as any);
+    },
+  };
+}
+
+/**
+ * Returns true when a REDIS_URL is configured.
+ * Used to conditionally enable Redis-dependent features
+ * (BullMQ task queues, token/credit limiting, etc.).
+ */
+export function isRedisEnabled(): boolean {
+  return !!process.env.REDIS_URL;
+}
+
+let _singleton: ConfigService<ENV> | undefined;
+function singletonConfigService(): ConfigService<ENV> {
+  if (!_singleton) {
+    const parsed = EnvSchema.safeParse(process.env);
+    const envVars = parsed.success ? parsed.data : process.env;
+    _singleton = new ConfigService<ENV>(envVars as Record<string, unknown>);
+  }
+  return _singleton;
+}

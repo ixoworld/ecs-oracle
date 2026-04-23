@@ -13,17 +13,18 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CallsModule } from './calls/calls.module';
-import { type ENV, EnvSchema } from './config';
+import { type ENV, EnvSchema, getConfig, isRedisEnabled } from './config';
 import { DataVaultModule } from './data-vault';
 import { MessagesModule } from './messages/messages.module';
 import { AuthHeaderMiddleware } from './middleware/auth-header.middleware';
 import { SubscriptionMiddleware } from './middleware/subscription.middleware';
 import { SessionsModule } from './sessions/sessions.module';
 import { SlackModule } from './slack/slack.module';
-import { TasksService } from './tasks/tasks.service';
+import { ClaimProcessingService } from './claim-processing/claim-processing.service';
 import { UcanModule } from './ucan/ucan.module';
 import { normalizeDid } from './utils/header.utils';
 import { RedisService } from './utils/redis.service';
+import { TasksModule } from './tasks/tasks.module';
 import { WsModule } from './ws/ws.module';
 
 @Module({
@@ -60,7 +61,8 @@ import { WsModule } from './ws/ws.module';
     SessionsModule,
     MessagesModule,
     UcanModule,
-    // QueueModule,
+    // TasksModule requires Redis for BullMQ job queues
+    ...(isRedisEnabled() ? [TasksModule] : []),
     // KnowledgeModule,
     ScheduleModule.forRoot(),
     SlackModule,
@@ -73,8 +75,12 @@ import { WsModule } from './ws/ws.module';
     {
       provide: RedisService,
       useFactory: (configService: ConfigService<ENV>) => {
-        const disableCredits = configService.get('DISABLE_CREDITS', false);
-        if (disableCredits) {
+        const config = getConfig(configService);
+        if (!isRedisEnabled()) {
+          Logger.log('RedisService disabled (REDIS_URL not configured)');
+          return null;
+        }
+        if (config.get('DISABLE_CREDITS')) {
           Logger.log('RedisService disabled (DISABLE_CREDITS=true)');
           return null;
         }
@@ -83,14 +89,20 @@ import { WsModule } from './ws/ws.module';
       inject: [ConfigService],
     },
     {
-      provide: TasksService,
+      provide: ClaimProcessingService,
       useFactory: (configService: ConfigService<ENV>) => {
-        const disableCredits = configService.get('DISABLE_CREDITS', false);
-        if (disableCredits) {
-          Logger.log('TasksService disabled (DISABLE_CREDITS=true)');
+        const config = getConfig(configService);
+        if (!isRedisEnabled()) {
+          Logger.log(
+            'ClaimProcessingService disabled (REDIS_URL not configured)',
+          );
           return null;
         }
-        return new TasksService(configService);
+        if (config.get('DISABLE_CREDITS')) {
+          Logger.log('ClaimProcessingService disabled (DISABLE_CREDITS=true)');
+          return null;
+        }
+        return new ClaimProcessingService(configService);
       },
       inject: [ConfigService],
     },
@@ -105,9 +117,13 @@ export class AppModule implements NestModule {
   constructor(private readonly configService: ConfigService<ENV>) {}
   configure(consumer: MiddlewareConsumer) {
     const disableCredits = this.configService.get('DISABLE_CREDITS', false);
+    const skipSubscription = disableCredits || !isRedisEnabled();
 
-    if (disableCredits) {
-      Logger.log('Subscription middleware disabled (DISABLE_CREDITS=true)');
+    if (skipSubscription) {
+      const reason = !isRedisEnabled()
+        ? 'REDIS_URL not configured'
+        : 'DISABLE_CREDITS=true';
+      Logger.log(`Subscription middleware disabled (${reason})`);
       consumer
         .apply(AuthHeaderMiddleware)
         .exclude(

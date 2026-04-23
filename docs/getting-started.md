@@ -1,6 +1,6 @@
-# Getting Started with IXO Oracles Framework
+# Getting Started with QiForge
 
-Welcome to the IXO Oracles Framework! This guide will walk you through building and deploying your first AI-powered oracle on the IXO network.
+Welcome to QiForge! This guide will walk you through building and deploying your first AI-powered oracle on the IXO network.
 
 ## 🎯 What You'll Build
 
@@ -18,17 +18,17 @@ Before you begin, ensure you have:
 
 ## 🚀 Quick Start (5 minutes)
 
-### Step 1: Install IXO Oracles CLI
+### Step 1: Install QiForge CLI
 
 ```bash
-npm install -g ixo-oracles-cli
+npm install -g qiforge-cli
 ```
 
 ### Step 2: Create Your First Oracle
 
 ```bash
 # Create a new oracle project
-oracles-cli --init
+qiforge --init
 
 # Follow the interactive prompts from the CLI
 
@@ -39,18 +39,70 @@ oracles-cli --init
 1. add to the `.env` file your api keys for `OpenRouter` ...etc.
 2. Finally run the app and open web portal(dev-net) to test your app
 
-### Step 3: Deploy with Docker
+### Step 3: Deploy Your Oracle
 
-Your project comes with a ready-to-deploy `Dockerfile`. You can use this file to deploy your oracle to your own infrastructure as you like.
+Your project comes with a ready-to-deploy `Dockerfile`. You can deploy to your own infrastructure or use Fly.io.
+
+#### Deploy to Fly.io (recommended)
+
+```bash
+# 1. Install flyctl and log in
+fly auth login
+
+# 2. IMPORTANT: Edit fly.toml and change `app = 'qiforge'` to your oracle name
+#    e.g., app = 'my-oracle'
+
+# 3. Create app without deploying yet
+fly launch --no-deploy
+
+# 4. (Optional) Set up Redis if you want the credits system
+fly redis create
+# Then set REDIS_URL in .env
+# Credits are enabled by default — to disable, set DISABLE_CREDITS=true
+
+# 5. Deploy
+pnpm run deploy
+```
+
+#### Deploy with Docker (self-hosted)
+
+```bash
+docker build -t my-oracle:latest --build-arg PROJECT=app -f Dockerfile .
+docker compose up -d
+```
+
+> See the [Deployment guide](./playbook/08-deployment.md) for full details.
 
 ### Step 4: Test Your Oracle
 
-After you have deployed your oracle, you can test it by opening the web portal(dev-net) and sending a message to your oracle and u can continue the conversation with the oracle in:
+After you have deployed your oracle, you can test it from the **CLI** or the **web portal**.
 
-- Matrix
-- Web Portal
+#### First-time setup (required once per user)
 
-Only the first time u use the oracle should be from portal so the client sdk can create your matrix room and grant the permissions to the oracle.
+The very first interaction with your oracle **must** happen through the **web portal** or the **QiForge CLI** (`qiforge chat`). This one-time setup:
+
+1. Creates an encrypted Matrix chat room between the user and the oracle.
+2. Grants the oracle permission (via a signed AuthZ transaction) to act on the user's behalf.
+3. Activates the user's subscription (required for sandbox execution, skills, and other features).
+
+```bash
+# Option A: CLI (no browser needed)
+qiforge chat
+
+# Option B: Web portal (dev-net)
+# Open https://dev.portal.qi.space/oracle/<ORACLE_ENTITY_DID>/connect
+```
+
+#### After first-time setup
+
+Once the initial setup is complete, you can continue the conversation with the oracle from any supported client:
+
+- **Web Portal** — full-featured UI with editor, skills, and sandbox
+- **QiForge CLI** — `qiforge chat` for quick terminal access
+- **Matrix** — any Matrix client (Element, etc.) using the room created during setup
+- **Slack** — if the Slack integration is configured
+
+> **Note:** The user must have an active subscription (active or trial) with sufficient credits to use the sandbox, skills, and other premium features. If credits are exhausted the oracle will return a 402 Payment Required error.
 
 ## 🧠 Building Your First Oracle
 

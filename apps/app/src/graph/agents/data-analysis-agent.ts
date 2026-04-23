@@ -1,6 +1,8 @@
 import { getOpenRouterChatModel } from '@ixo/common';
 import type { AgentSpec } from './subagent-as-tool';
 
+type ChatModel = NonNullable<AgentSpec['model']>;
+
 /**
  * Data Analysis Agent
  *
@@ -16,7 +18,7 @@ import type { AgentSpec } from './subagent-as-tool';
 
 // Use fast MoE model for quick inference (~200 tok/s)
 // TODO: Add caching layer to avoid re-analyzing identical MCP tool response structures
-const llm = getOpenRouterChatModel({
+const llm: ChatModel = getOpenRouterChatModel({
   model: 'moonshotai/kimi-k2.5', // Fast MoE model, ~200 tok/s
   __includeRawResponse: true,
   modelKwargs: {
@@ -177,7 +179,12 @@ Return your analysis as a JSON object:
 Now analyze the provided data samples and return your structured analysis.
 `.trim();
 
-export type DataAnalysisAgentInstance = AgentSpec;
+export interface DataAnalysisAgentInstance {
+  name: string;
+  description: string;
+  systemPrompt: string;
+  model: ChatModel;
+}
 
 export const createDataAnalysisAgent =
   async (): Promise<DataAnalysisAgentInstance> => {
@@ -185,9 +192,7 @@ export const createDataAnalysisAgent =
       name: 'Data Analysis Agent',
       description:
         'Specialized sub-agent for analyzing MCP response samples to provide semantic understanding, offloading recommendations, and visualization suggestions',
-      tools: [], // No tools needed - pure analysis
       systemPrompt,
       model: llm,
-      middleware: [],
     };
   };

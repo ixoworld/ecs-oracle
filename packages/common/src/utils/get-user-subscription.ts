@@ -34,30 +34,37 @@ export interface GetUserSubscriptionParams {
   network: 'mainnet' | 'testnet' | 'devnet';
   bearerToken: string;
   subscriptionUrl?: string;
+  /** When set to 'ucan', includes X-Auth-Type header for UCAN invocation auth */
+  authType?: 'ucan';
 }
 
 export const getUserSubscription = async ({
   bearerToken,
   network,
   subscriptionUrl: _subscriptionUrl,
+  authType,
 }: GetUserSubscriptionParams): Promise<GetMySubscriptionsResponseDto | null> => {
   const subscriptionUrl =
     _subscriptionUrl ?? getSubscriptionUrlByNetwork(network);
   try {
     Logger.debug('Fetching user subscription from:', subscriptionUrl);
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${bearerToken}`,
+      'Content-Type': 'application/json',
+    };
+    if (authType === 'ucan') {
+      headers['X-Auth-Type'] = 'ucan';
+    }
     const response = await fetch(
       `${subscriptionUrl.endsWith('/') ? subscriptionUrl.slice(0, -1) : subscriptionUrl}/api/v1/subscriptions`,
       {
         method: 'GET',
-        headers: {
-          Authorization: `Bearer ${bearerToken}`,
-          'Content-Type': 'application/json',
-        },
+        headers,
       },
     );
 
     if (!response.ok) {
-      console.error(
+      Logger.error(
         `Failed to fetch user subscription: ${response.status} ${response.statusText}`,
       );
       return null;
@@ -78,7 +85,7 @@ export const getUserSubscription = async ({
       adminAddress: subscription.adminAddress,
     };
   } catch (error) {
-    console.error('Error fetching user subscription:', error);
+    Logger.error('Error fetching user subscription:', error);
     return null;
   }
 };

@@ -3,13 +3,13 @@ import { BaseCallbackHandler } from '@langchain/core/callbacks/base';
 import { type Serialized } from '@langchain/core/load/serializable';
 import { type LLMResult } from '@langchain/core/outputs';
 import { HttpException, HttpStatus, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import crypto from 'node:crypto';
-import { type ENV } from 'src/config';
+import { getConfig } from 'src/config';
+import { getModelPricing } from 'src/graph/llm-provider';
 import z from 'zod';
 import { RedisService } from './redis.service';
 
-const configService = new ConfigService<ENV>();
+const config = getConfig();
 
 export class TokenLimiter {
   static readonly KEY_PREFIX = 'token_limit:';
@@ -67,17 +67,96 @@ export class TokenLimiter {
     );
   }
 
+  /**
+   * Convert raw USD cost (e.g. from OpenRouter response_metadata.usage.cost)
+   * to credits. 1 USD = 1000 base credits on mainnet.
+   * On devnet, 10x multiplier so small costs are visible for testing claims.
+   */
+  static usdCostToCredits(usdCost: number): number {
+    const isMainnet = config.getOrThrow('NETWORK') === 'mainnet';
+    const creditsPerUsd = isMainnet ? 1000 : 10_000;
+    const markup = isMainnet ? 1.6 : 4;
+    return Math.round(usdCost * creditsPerUsd * markup);
+  }
+
+  /**
+   * Calculate cost in USD with our markup applied, using the same
+   * 3-priority fallback as the token limiter middleware.
+   *
+   * Priority 1: exact provider cost (e.g. OpenRouter) × markup
+   * Priority 2: per-model pricing from cache × markup
+   * Priority 3: flat-rate $0.75/1M tokens × markup
+   */
+  static calculateCostUsdWithMarkup(params: {
+    providerCost?: number;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    model?: string;
+  }): number {
+    const markup = config.getOrThrow('NETWORK') === 'mainnet' ? 1.6 : 5;
+
+    // Priority 1: exact provider cost
+    if (params.providerCost != null && params.providerCost > 0) {
+      return params.providerCost * markup;
+    }
+
+    // Priority 2: per-model pricing from cache
+    const pricing = params.model ? getModelPricing(params.model) : null;
+    if (pricing) {
+      const inputCost =
+        (params.inputTokens / 1_000_000) * pricing.inputPricePerMillionTokens;
+      const outputCost =
+        (params.outputTokens / 1_000_000) * pricing.outputPricePerMillionTokens;
+      return (inputCost + outputCost) * markup;
+    }
+
+    // Priority 3: flat-rate fallback
+    return (params.totalTokens / 1_000_000) * 0.75 * markup;
+  }
+
   static llmTokenToCredits(tokenCount: number): number {
-    // Cost is $0.75 per 1M tokens
-    // GROQ - OSS 120b model
+    // Flat-rate fallback: $0.75 per 1M tokens
     // Returns credits as float (1 credit = 1 uixo)
 
-    const markup = configService.getOrThrow('NETWORK') === 'mainnet' ? 1.3 : 10;
-    const costPerMillionTokens = 0.75 * markup; // 30% markup for profit
+    const markup = config.getOrThrow('NETWORK') === 'mainnet' ? 1.6 : 5;
+    const costPerMillionTokens = 0.75 * markup;
     const tokensPerMillion =
-      configService.getOrThrow('NETWORK') === 'mainnet' ? 1_000_000 : 1;
+      config.getOrThrow('NETWORK') === 'mainnet' ? 1_000_000 : 1000;
 
     return Math.round((tokenCount / tokensPerMillion) * costPerMillionTokens);
+  }
+
+  /**
+   * Calculate credits using per-model pricing (separate input/output rates).
+   * Falls back to flat rate if pricing is null.
+   */
+  static llmTokenToCreditsWithPricing(
+    inputTokens: number,
+    outputTokens: number,
+    pricing: {
+      inputPricePerMillionTokens: number;
+      outputPricePerMillionTokens: number;
+    } | null,
+  ): number {
+    if (!pricing) {
+      Logger.log(
+        `No pricing found fallback into LLMTokenToCredits`,
+        '[llmTokenToCreditsWithPricing]',
+      );
+      return TokenLimiter.llmTokenToCredits(inputTokens + outputTokens);
+    }
+
+    const markup = config.getOrThrow('NETWORK') === 'mainnet' ? 1.6 : 5;
+    const divisor =
+      config.getOrThrow('NETWORK') === 'mainnet' ? 1_000_000 : 1000;
+
+    const inputCost =
+      (inputTokens / divisor) * pricing.inputPricePerMillionTokens;
+    const outputCost =
+      (outputTokens / divisor) * pricing.outputPricePerMillionTokens;
+
+    return Math.round((inputCost + outputCost) * markup);
   }
 
   static async getSubscriptionPayload(
@@ -169,7 +248,7 @@ export class TokenLimiter {
         '0',
       );
 
-      if (configService.getOrThrow('DISABLE_CREDITS')) {
+      if (config.getOrThrow('DISABLE_CREDITS')) {
         return '0';
       }
       throw new HttpException(
@@ -445,6 +524,7 @@ class TokenLimiterError extends Error {
     this.type = type;
     this.limit = limit;
     this.reset = reset;
+    this.currentBalance = _currentBalance;
   }
 }
 
