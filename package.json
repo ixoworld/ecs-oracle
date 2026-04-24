@@ -15,7 +15,11 @@
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,md,json}\"",
     "version": "changeset version",
-    "release": "changeset tag"
+    "release": "changeset tag",
+    "deploy": "./scripts/deploy.sh",
+    "infra:up": "docker compose up -d redis redis-insight",
+    "infra:down": "docker compose down",
+    "infra:clean": "docker compose down -v"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.5.1",
@@ -42,22 +46,36 @@
     "pnpm": ">=10.0.0"
   },
   "pnpm": {
+    "peerDependencyRules": {
+      "ignoreMissing": [
+        "react",
+        "react-dom",
+        "react-jazzicon",
+        "@mantine/core",
+        "@mantine/hooks",
+        "@blocknote/core",
+        "@blocknote/react",
+        "@blocknote/mantine",
+        "@ixo/surveys"
+      ]
+    },
     "overrides": {
       "ws": "8.18.2",
-      "@langchain/core": "^1.0.5",
-      "@langchain/langgraph": "^1.0.2",
+      "@langchain/core": "^1.1.31",
+      "@langchain/langgraph": "^1.2.1",
       "@digitalbazaar/http-client": "4.2.0"
     },
     "onlyBuiltDependencies": [
-      "@nestjs/core",
       "@ixo/matrix-sdk-crypto-nodejs",
       "@matrix-org/matrix-sdk-crypto-nodejs",
+      "@nestjs/core",
       "@scarf/scarf",
       "@swc/core",
+      "@veramo/credential-ld",
       "better-sqlite3",
       "cpu-features",
-      "@veramo/credential-ld",
       "esbuild",
+      "maplibre-gl",
       "msgpackr-extract",
       "protobufjs",
       "secp256k1",

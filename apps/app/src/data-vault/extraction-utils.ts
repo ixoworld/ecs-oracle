@@ -29,7 +29,11 @@ export function getByPath(obj: unknown, path: string): unknown {
  * @param path - Dot-notation path
  * @param value - Value to set
  */
-export function setByPath(obj: Record<string, unknown>, path: string, value: unknown): void {
+export function setByPath(
+  obj: Record<string, unknown>,
+  path: string,
+  value: unknown,
+): void {
   if (path === '' || path === '.') {
     throw new Error('Cannot set root path');
   }

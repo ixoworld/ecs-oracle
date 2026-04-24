@@ -14,6 +14,7 @@ import type {
   Delegation,
   Capability,
   Principal,
+  Fact,
 } from '@ucanto/interface';
 import type { SupportedDID } from '../types.js';
 
@@ -193,12 +194,14 @@ export async function createDelegation(options: {
   audience: string;
   /** The capabilities being delegated */
   capabilities: Capability[];
-  /** Expiration timestamp (Unix seconds) */
+  /** Expiration timestamp (Unix seconds). Defaults to Infinity (never expires). */
   expiration?: number;
   /** Not before timestamp (Unix seconds) */
   notBefore?: number;
   /** Parent delegations (proof chain) */
   proofs?: Delegation[];
+  /** Verifiable facts and proofs of knowledge (UCAN spec §3.2.4) */
+  facts?: Fact[];
 }): Promise<Delegation> {
   // Create principal from any DID (did:key, did:ixo, did:web, etc.)
   const audiencePrincipal = createPrincipal(options.audience);
@@ -208,9 +211,10 @@ export async function createDelegation(options: {
     audience: audiencePrincipal,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ucanto delegate() expects a specific branded tuple type incompatible with Capability[]
     capabilities: options.capabilities as any,
-    expiration: options.expiration,
+    expiration: options.expiration ?? Infinity,
     proofs: options.proofs,
     notBefore: options.notBefore,
+    facts: options.facts,
   });
 }
 
@@ -250,6 +254,10 @@ export async function createInvocation(options: {
   capability: Capability;
   /** Delegation proofs */
   proofs?: Delegation[];
+  /** Expiration timestamp (Unix seconds). Defaults to Infinity (never expires). */
+  expiration?: number;
+  /** Verifiable facts and proofs of knowledge (UCAN spec §3.2.4) */
+  facts?: Fact[];
 }) {
   // Create principal from any DID (did:key, did:ixo, did:web, etc.)
   const audiencePrincipal = createPrincipal(options.audience);
@@ -259,6 +267,8 @@ export async function createInvocation(options: {
     audience: audiencePrincipal,
     capability: options.capability,
     proofs: options.proofs ?? [],
+    expiration: options.expiration ?? Infinity,
+    facts: options.facts,
   });
 }
 
@@ -341,4 +351,4 @@ export async function parseDelegation(serialized: string): Promise<Delegation> {
 }
 
 // Re-export useful types
-export type { Signer, Delegation, Capability };
+export type { Signer, Delegation, Capability, Fact };

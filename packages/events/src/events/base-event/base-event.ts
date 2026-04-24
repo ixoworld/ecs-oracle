@@ -58,10 +58,10 @@ export abstract class BaseEvent<P> {
   ): void {
     rootEventEmitter.on(this.eventName, (data) => {
       const payload = shouldHaveSessionId(data);
-      console.log(
-        `Emitting WS event: ${this.eventName} with payload:`,
-        payload,
-      );
+      // console.log(
+      //   `Emitting WS event: ${this.eventName} with payload:`,
+      //   payload,
+      // );
       server.to(payload.sessionId).emit(this.eventName, data);
     });
   }
@@ -81,10 +81,10 @@ export abstract class BaseEvent<P> {
     if (!this.payload.sessionId) {
       throw new Error('Session ID must be provided.');
     }
-    console.log(
-      `Emitting event: ${this.eventName} with payload:`,
-      this.payload,
-    );
+    // console.log(
+    //   `Emitting event: ${this.eventName} with payload:`,
+    //   this.payload,
+    // );
     rootEventEmitter.emit(this.eventName, this.payload);
   }
 }

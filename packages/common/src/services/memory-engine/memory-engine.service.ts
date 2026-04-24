@@ -5,13 +5,44 @@ import type {
   UserContextData,
 } from './types.js';
 
+interface MemoryEngineAuthHeaders {
+  oracleToken: string;
+  userToken: string;
+  oracleHomeServer: string;
+  userHomeServer: string;
+  /** When set, uses UCAN auth instead of Matrix tokens */
+  ucanInvocation?: string;
+}
+
 export class MemoryEngineService {
   private readonly QUERY_TIMEOUT_MS = 2500; // 2.5 seconds per query
 
-  constructor(
-    private readonly memoryEngineUrl: string,
-    private readonly memoryServiceApiKey: string,
-  ) {}
+  constructor(private readonly memoryEngineUrl: string) {}
+
+  /**
+   * Build HTTP headers for memory engine requests (UCAN or Matrix)
+   */
+  private buildHeaders(
+    auth: MemoryEngineAuthHeaders,
+    roomId: string,
+  ): Record<string, string> {
+    if (auth.ucanInvocation) {
+      return {
+        Authorization: `Bearer ${auth.ucanInvocation}`,
+        'X-Auth-Type': 'ucan',
+        'x-room-id': roomId,
+        'Content-Type': 'application/json',
+      };
+    }
+    return {
+      'x-oracle-token': auth.oracleToken,
+      'x-user-token': auth.userToken,
+      'x-oracle-matrix-homeserver': auth.oracleHomeServer,
+      'x-user-matrix-homeserver': auth.userHomeServer,
+      'x-room-id': roomId,
+      'Content-Type': 'application/json',
+    };
+  }
 
   /**
    * Wraps a promise with a timeout, returning fallback value if timeout is exceeded
@@ -34,10 +65,23 @@ export class MemoryEngineService {
    */
   async gatherUserContext(params: {
     oracleDid: string;
-    userDid: string;
     roomId: string;
+    oracleToken: string;
+    userToken: string;
+    oracleHomeServer: string;
+    userHomeServer: string;
+    /** When set, uses UCAN auth instead of Matrix tokens */
+    ucanInvocation?: string;
   }): Promise<UserContextData> {
-    const { oracleDid, userDid, roomId } = params;
+    const {
+      oracleDid,
+      roomId,
+      oracleToken,
+      userToken,
+      oracleHomeServer,
+      userHomeServer,
+      ucanInvocation,
+    } = params;
 
     Logger.info(
       `[MemoryEngineService] Gathering user context for oracle: ${oracleDid}, room: ${roomId}`,
@@ -45,34 +89,42 @@ export class MemoryEngineService {
 
     try {
       // Execute all 6 queries in parallel with timeouts using Promise.allSettled
+      const authHeaders: MemoryEngineAuthHeaders = {
+        oracleToken,
+        userToken,
+        oracleHomeServer,
+        userHomeServer,
+        ucanInvocation,
+      };
+
       const results = await Promise.allSettled([
         this.withTimeout(
-          this.queryIdentity(oracleDid, userDid, roomId),
+          this.queryIdentity(oracleDid, roomId, authHeaders),
           this.QUERY_TIMEOUT_MS,
           undefined,
         ),
         this.withTimeout(
-          this.queryWork(oracleDid, userDid, roomId),
+          this.queryWork(oracleDid, roomId, authHeaders),
           this.QUERY_TIMEOUT_MS,
           undefined,
         ),
         this.withTimeout(
-          this.queryGoals(oracleDid, userDid, roomId),
+          this.queryGoals(oracleDid, roomId, authHeaders),
           this.QUERY_TIMEOUT_MS,
           undefined,
         ),
         this.withTimeout(
-          this.queryInterests(oracleDid, userDid, roomId),
+          this.queryInterests(oracleDid, roomId, authHeaders),
           this.QUERY_TIMEOUT_MS,
           undefined,
         ),
         this.withTimeout(
-          this.queryRelationships(oracleDid, userDid, roomId),
+          this.queryRelationships(oracleDid, roomId, authHeaders),
           this.QUERY_TIMEOUT_MS,
           undefined,
         ),
         this.withTimeout(
-          this.queryRecent(oracleDid, userDid, roomId),
+          this.queryRecent(oracleDid, roomId, authHeaders),
           this.QUERY_TIMEOUT_MS,
           undefined,
         ),
@@ -125,8 +177,8 @@ export class MemoryEngineService {
    */
   private async queryIdentity(
     oracleDid: string,
-    userDid: string,
     roomId: string,
+    auth: MemoryEngineAuthHeaders,
   ): Promise<SearchEnhancedResponse | undefined> {
     const request: SearchEnhancedRequest = {
       oracle_dids: [oracleDid],
@@ -153,7 +205,7 @@ export class MemoryEngineService {
       },
     };
 
-    return this.executeQuery(request, userDid, oracleDid, roomId);
+    return this.executeQuery(request, roomId, auth);
   }
 
   /**
@@ -161,8 +213,8 @@ export class MemoryEngineService {
    */
   private async queryWork(
     oracleDid: string,
-    userDid: string,
     roomId: string,
+    auth: MemoryEngineAuthHeaders,
   ): Promise<SearchEnhancedResponse | undefined> {
     const request: SearchEnhancedRequest = {
       oracle_dids: [oracleDid],
@@ -196,7 +248,7 @@ export class MemoryEngineService {
       },
     };
 
-    return this.executeQuery(request, userDid, oracleDid, roomId);
+    return this.executeQuery(request, roomId, auth);
   }
 
   /**
@@ -204,8 +256,8 @@ export class MemoryEngineService {
    */
   private async queryGoals(
     oracleDid: string,
-    userDid: string,
     roomId: string,
+    auth: MemoryEngineAuthHeaders,
   ): Promise<SearchEnhancedResponse | undefined> {
     const request: SearchEnhancedRequest = {
       oracle_dids: [oracleDid],
@@ -231,7 +283,7 @@ export class MemoryEngineService {
       },
     };
 
-    return this.executeQuery(request, userDid, oracleDid, roomId);
+    return this.executeQuery(request, roomId, auth);
   }
 
   /**
@@ -239,8 +291,8 @@ export class MemoryEngineService {
    */
   private async queryInterests(
     oracleDid: string,
-    userDid: string,
     roomId: string,
+    auth: MemoryEngineAuthHeaders,
   ): Promise<SearchEnhancedResponse | undefined> {
     const request: SearchEnhancedRequest = {
       oracle_dids: [oracleDid],
@@ -273,7 +325,7 @@ export class MemoryEngineService {
       },
     };
 
-    return this.executeQuery(request, userDid, oracleDid, roomId);
+    return this.executeQuery(request, roomId, auth);
   }
 
   /**
@@ -281,8 +333,8 @@ export class MemoryEngineService {
    */
   private async queryRelationships(
     oracleDid: string,
-    userDid: string,
     roomId: string,
+    auth: MemoryEngineAuthHeaders,
   ): Promise<SearchEnhancedResponse | undefined> {
     const request: SearchEnhancedRequest = {
       oracle_dids: [oracleDid],
@@ -308,7 +360,7 @@ export class MemoryEngineService {
       },
     };
 
-    return this.executeQuery(request, userDid, oracleDid, roomId);
+    return this.executeQuery(request, roomId, auth);
   }
 
   /**
@@ -316,8 +368,8 @@ export class MemoryEngineService {
    */
   private async queryRecent(
     oracleDid: string,
-    userDid: string,
     roomId: string,
+    auth: MemoryEngineAuthHeaders,
   ): Promise<SearchEnhancedResponse | undefined> {
     // Calculate date 90 days ago for recent context
     const ninetyDaysAgo = new Date();
@@ -339,7 +391,7 @@ export class MemoryEngineService {
       },
     };
 
-    return this.executeQuery(request, userDid, oracleDid, roomId);
+    return this.executeQuery(request, roomId, auth);
   }
 
   /**
@@ -347,9 +399,12 @@ export class MemoryEngineService {
    */
   async processConversationHistory({
     messages,
-    userDid,
-    oracleDid,
     roomId,
+    oracleToken,
+    userToken,
+    oracleHomeServer,
+    userHomeServer,
+    ucanInvocation,
   }: {
     messages: Array<{
       content: string;
@@ -358,25 +413,23 @@ export class MemoryEngineService {
       name?: string;
       source_description?: string;
     }>;
-    userDid: string;
-    oracleDid: string;
     roomId: string;
+    oracleToken: string;
+    userToken: string;
+    oracleHomeServer: string;
+    userHomeServer: string;
+    /** When set, uses UCAN auth instead of Matrix tokens */
+    ucanInvocation?: string;
   }): Promise<{ success: boolean }> {
-    if (!userDid) {
-      Logger.warn(
-        `[MemoryEngineService] No user DID provided, skipping conversation processing`,
-      );
-      return { success: false };
-    }
-    if (!oracleDid) {
-      Logger.warn(
-        `[MemoryEngineService] No oracle did provided, skipping conversation processing`,
-      );
-      return { success: false };
-    }
     if (!roomId) {
       Logger.warn(
         `[MemoryEngineService] No room id provided, skipping conversation processing`,
+      );
+      return { success: false };
+    }
+    if (!ucanInvocation && (!oracleToken || !userToken)) {
+      Logger.warn(
+        `[MemoryEngineService] Missing auth (no UCAN and no Matrix tokens), skipping conversation processing`,
       );
       return { success: false };
     }
@@ -388,15 +441,16 @@ export class MemoryEngineService {
     }
 
     try {
+      const auth: MemoryEngineAuthHeaders = {
+        oracleToken,
+        userToken,
+        oracleHomeServer,
+        userHomeServer,
+        ucanInvocation,
+      };
       const response = await fetch(`${this.memoryEngineUrl}/messages`, {
         method: 'POST',
-        headers: {
-          'x-user-did': userDid,
-          'x-oracle-did': oracleDid,
-          'x-room-id': roomId,
-          'x-service-api-key': this.memoryServiceApiKey,
-          'Content-Type': 'application/json',
-        },
+        headers: this.buildHeaders(auth, roomId),
         body: JSON.stringify({ messages }),
       });
 
@@ -426,25 +480,18 @@ export class MemoryEngineService {
    */
   private async executeQuery(
     request: SearchEnhancedRequest,
-    userDid: string,
-    oracleDid: string,
     roomId: string,
+    auth: MemoryEngineAuthHeaders,
   ): Promise<SearchEnhancedResponse | undefined> {
-    if (!userDid) {
-      Logger.warn(
-        `[MemoryEngineService] No user DID provided, skipping query "${request.query}"`,
-      );
-      return undefined;
-    }
-    if (!oracleDid) {
-      Logger.warn(
-        `[MemoryEngineService] No oracle did provided, skipping query "${request.query}"`,
-      );
-      return undefined;
-    }
     if (!roomId) {
       Logger.warn(
         `[MemoryEngineService] No room id provided, skipping query "${request.query}"`,
+      );
+      return undefined;
+    }
+    if (!auth.ucanInvocation && (!auth.oracleToken || !auth.userToken)) {
+      Logger.warn(
+        `[MemoryEngineService] Missing auth (no UCAN and no Matrix tokens), skipping query "${request.query}"`,
       );
       return undefined;
     }
@@ -452,13 +499,7 @@ export class MemoryEngineService {
     try {
       const response = await fetch(`${this.memoryEngineUrl}/search-enhanced`, {
         method: 'POST',
-        headers: {
-          'x-user-did': userDid,
-          'x-oracle-did': oracleDid,
-          'x-room-id': roomId,
-          'x-service-api-key': this.memoryServiceApiKey,
-          'Content-Type': 'application/json',
-        },
+        headers: this.buildHeaders(auth, roomId),
         body: JSON.stringify(request),
       });
 

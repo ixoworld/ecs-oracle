@@ -57,13 +57,19 @@ export class DataVaultController {
     }
 
     // Validate access token
-    const isValidToken = await this.dataVaultService.validateAccessToken(handleId, accessToken);
+    const isValidToken = await this.dataVaultService.validateAccessToken(
+      handleId,
+      accessToken,
+    );
     if (!isValidToken) {
       throw new UnauthorizedException('Invalid access token');
     }
 
     // Retrieve data AND metadata from Redis
-    const result = await this.dataVaultService.retrieveWithMetadata(handleId, userDid);
+    const result = await this.dataVaultService.retrieveWithMetadata(
+      handleId,
+      userDid,
+    );
 
     if (!result) {
       throw new NotFoundException('Data not found or expired');
@@ -88,5 +94,4 @@ export class DataVaultController {
       metadata: result.metadata,
     });
   }
-
 }

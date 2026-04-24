@@ -63,9 +63,15 @@ export function createOracleRetrievalTools(
 - sql: Your SQL query with {table} as table placeholder
 - accessToken: The fetchToken from the metadata`,
     schema: z.object({
-      handleId: z.string().describe('The vault handle ID (from handleId in metadata)'),
-      sql: z.string().describe('SQL query to execute. Use {table} as the table name.'),
-      accessToken: z.string().describe('The access token (from fetchToken in metadata)'),
+      handleId: z
+        .string()
+        .describe('The vault handle ID (from handleId in metadata)'),
+      sql: z
+        .string()
+        .describe('SQL query to execute. Use {table} as the table name.'),
+      accessToken: z
+        .string()
+        .describe('The access token (from fetchToken in metadata)'),
     }),
     func: async (args) => {
       logger.log(`query_vaulted_data: handle=${args.handleId}`);
@@ -91,7 +97,8 @@ export function createOracleRetrievalTools(
             : undefined,
         });
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Query failed';
+        const errorMessage =
+          error instanceof Error ? error.message : 'Query failed';
         const isDataNotFound =
           errorMessage.includes('not found') ||
           errorMessage.includes('expired') ||
@@ -167,15 +174,23 @@ This will store fresh data in the vault with a NEW handle.`,
 - accessToken: The fetchToken from the metadata
 - limit: Optional - max rows to return (recommended for large datasets)`,
     schema: z.object({
-      handleId: z.string().describe('The vault handle ID (from handleId in metadata)'),
-      accessToken: z.string().describe('The access token (from fetchToken in metadata)'),
+      handleId: z
+        .string()
+        .describe('The vault handle ID (from handleId in metadata)'),
+      accessToken: z
+        .string()
+        .describe('The access token (from fetchToken in metadata)'),
       limit: z
         .number()
         .optional()
-        .describe('Maximum rows to return. Use this for safety with large datasets.'),
+        .describe(
+          'Maximum rows to return. Use this for safety with large datasets.',
+        ),
     }),
     func: async (args) => {
-      logger.log(`retrieve_vaulted_data: handle=${args.handleId} limit=${args.limit ?? 'none'}`);
+      logger.log(
+        `retrieve_vaulted_data: handle=${args.handleId} limit=${args.limit ?? 'none'}`,
+      );
 
       try {
         const result = await queryService.retrieveFullData({
@@ -198,7 +213,8 @@ This will store fresh data in the vault with a NEW handle.`,
               : undefined,
         });
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Retrieval failed';
+        const errorMessage =
+          error instanceof Error ? error.message : 'Retrieval failed';
         const isDataNotFound =
           errorMessage.includes('not found') ||
           errorMessage.includes('expired') ||

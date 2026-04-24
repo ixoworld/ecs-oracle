@@ -15,8 +15,13 @@ import { setDataVaultQueryInstance } from './query.singleton';
       useFactory: () => {
         const redisUrl = process.env.REDIS_URL;
         if (!redisUrl) {
-          Logger.error('REDIS_URL is required for DataVault', 'DataVaultModule');
-          throw new Error('REDIS_URL environment variable is required for DataVault');
+          Logger.error(
+            'REDIS_URL is required for DataVault',
+            'DataVaultModule',
+          );
+          throw new Error(
+            'REDIS_URL environment variable is required for DataVault',
+          );
         }
 
         // Use environment variables for configuration
@@ -63,8 +68,13 @@ import { setDataVaultQueryInstance } from './query.singleton';
       useFactory: () => {
         const redisUrl = process.env.REDIS_URL;
         if (!redisUrl) {
-          Logger.error('REDIS_URL is required for DataVaultQueryService', 'DataVaultModule');
-          throw new Error('REDIS_URL environment variable is required for DataVaultQueryService');
+          Logger.error(
+            'REDIS_URL is required for DataVaultQueryService',
+            'DataVaultModule',
+          );
+          throw new Error(
+            'REDIS_URL environment variable is required for DataVaultQueryService',
+          );
         }
 
         const service = new DataVaultQueryService({

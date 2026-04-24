@@ -1,15 +1,24 @@
 import { getSubscriptionUrlByNetwork } from '@ixo/common';
 import { MatrixManager } from '@ixo/matrix';
-import { setupClaimSigningMnemonics } from '@ixo/oracles-chain-client';
+import {
+  loadEncryptionKey,
+  setupClaimSigningMnemonics,
+} from '@ixo/oracles-chain-client';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { type INestApplication, Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import type { Cache } from 'cache-manager';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
-import { type ENV } from './config';
+import { type ENV, isRedisEnabled } from './config';
+import { UcanService } from './ucan/ucan.service';
 import { EditorMatrixClient } from './graph/agents/editor/editor-mx';
+import { initModelPricingCache } from './graph/llm-provider';
+import { SecretsService } from './secrets/secrets.service';
 import { UserMatrixSqliteSyncService } from './user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
+import { UserSkillsService } from './user-skills/user-skills.service';
 
 async function bootstrap(): Promise<void> {
   // await migrate();
@@ -36,6 +45,7 @@ async function bootstrap(): Promise<void> {
       'x-timezone',
       'x-user-did',
       'x-data-token',
+      'x-ucan-delegation',
     ],
     exposedHeaders: ['X-Request-Id', 'X-Data-Row-Count'],
   });
@@ -92,24 +102,41 @@ async function bootstrap(): Promise<void> {
   });
 
   const matrixManager = MatrixManager.getInstance();
-  await matrixManager.init();
-
-  const editorMatrixClient = EditorMatrixClient.getInstance();
-  editorMatrixClient.init().catch((error) => {
-    Logger.error('Failed to initialize EditorMatrixClient:', error);
-    Logger.warn('Editor functionality may be limited until sync completes');
-  });
-  Logger.log('EditorMatrixClient initialization started in background...');
 
   registerGracefulShutdown({ app, matrixManager });
 
-  const matrixAccountRoomId = configService.get('MATRIX_ACCOUNT_ROOM_ID');
-  const disableCredits =
-    configService.get('DISABLE_CREDITS', false) || !matrixAccountRoomId;
-  if (!disableCredits) {
+  // SecretsService is a manual singleton (not @Injectable) because it's accessed from
+  // LangGraph agent code outside NestJS DI. Pass the cache manager here at bootstrap.
+  const cache = app.get<Cache>(CACHE_MANAGER);
+  SecretsService.getInstance().setCacheManager(cache);
+  UserSkillsService.getInstance().setCacheManager(cache);
+
+  // Load per-model pricing from provider APIs (non-blocking)
+  initModelPricingCache().catch((err) =>
+    Logger.warn('Failed to init model pricing cache', err),
+  );
+
+  // Fire Matrix init in background (don't await — let server start for health checks).
+  // MessagesService.onModuleInit defers its listener until this completes.
+  Logger.log('Initializing MatrixManager (background)...');
+  try {
+    await matrixManager.init();
+    Logger.log('MatrixManager initialized successfully');
+    Logger.log(`Oracle: ${matrixManager.getClient()?.userId}`);
+
+    // Initialize non-critical services after Matrix is ready
+    const editorMatrixClient = EditorMatrixClient.getInstance();
+    editorMatrixClient.init().catch((error) => {
+      Logger.error('Failed to initialize EditorMatrixClient:', error);
+      Logger.warn('Editor functionality may be limited until sync completes');
+    });
+    Logger.log('EditorMatrixClient initialization started in background...');
+
+    const matrixAccountRoomId = configService.get('MATRIX_ACCOUNT_ROOM_ID');
+    // still run setupClaimSigningMnemonics even if DISABLE_CREDITS as need it for ucan signing
     Logger.log('Setting up claim signing mnemonics...');
     Logger.log(`Matrix account room id: ${matrixAccountRoomId}`);
-    await setupClaimSigningMnemonics({
+    const signingMnemonic = await setupClaimSigningMnemonics({
       matrixRoomId: matrixAccountRoomId,
       matrixAccessToken: configService.getOrThrow(
         'MATRIX_ORACLE_ADMIN_ACCESS_TOKEN',
@@ -120,20 +147,62 @@ async function bootstrap(): Promise<void> {
       network: configService.getOrThrow('NETWORK'),
     });
     Logger.log('Claim signing mnemonics setup complete');
-  } else {
-    Logger.log('Signing mnemonic creation skipped (DISABLE_CREDITS=true)');
+
+    if (signingMnemonic) {
+      const ucanService = app.get(UcanService);
+      ucanService.setSigningMnemonic(
+        signingMnemonic,
+        configService.getOrThrow('ORACLE_DID'),
+      );
+    }
+
+    // Load P-256 encryption key for user secrets
+    if (matrixAccountRoomId) {
+      Logger.log('Loading P-256 encryption key...');
+      const encryptionKeyResult = await loadEncryptionKey({
+        matrixRoomId: matrixAccountRoomId,
+        matrixAccessToken: configService.getOrThrow(
+          'MATRIX_ORACLE_ADMIN_ACCESS_TOKEN',
+        ),
+        pin: configService.getOrThrow('MATRIX_VALUE_PIN'),
+        signerDid: configService.getOrThrow('ORACLE_DID'),
+      });
+      if (encryptionKeyResult) {
+        SecretsService.getInstance().setEncryptionKey(
+          encryptionKeyResult.privateJwk,
+        );
+        Logger.log('P-256 encryption key loaded successfully');
+      } else {
+        Logger.warn(
+          'No P-256 encryption key found. User secrets will be unavailable. ' +
+            'Run "oracles-cli setup-encryption-key" to provision one.',
+        );
+      }
+    }
+  } catch (error) {
+    Logger.error('Failed to initialize MatrixManager:', error);
   }
 
-  await app.listen(port);
+  // Server starts immediately — health checks pass while Matrix syncs in background
+  await app.listen(port, '0.0.0.0');
   Logger.log(`Application is running on: ${await app.getUrl()}`);
   Logger.log(`Swagger UI available at: ${await app.getUrl()}/docs`);
-  Logger.log(`Oracle: ${matrixManager.getClient()?.userId}`);
   Logger.log(
     `subscription: ${configService.get('SUBSCRIPTION_URL') ?? getSubscriptionUrlByNetwork(configService.getOrThrow('NETWORK'))}`,
   );
   Logger.log(
     `Credits disabled: ${configService.get('DISABLE_CREDITS')}. type: ${typeof configService.get('DISABLE_CREDITS')}`,
   );
+
+  if (!isRedisEnabled()) {
+    Logger.warn('--- Redis is NOT configured (REDIS_URL not set) ---');
+    Logger.warn('The following features are disabled:');
+    Logger.warn('  • TasksModule (BullMQ job queues / scheduled tasks)');
+    Logger.warn('  • TokenLimiter (credit/token tracking)');
+    Logger.warn('  • ClaimProcessingService (on-chain credit claims)');
+    Logger.warn('  • RedisService (direct Redis client)');
+    Logger.warn('Set REDIS_URL to enable these features.');
+  }
 }
 
 function registerGracefulShutdown({

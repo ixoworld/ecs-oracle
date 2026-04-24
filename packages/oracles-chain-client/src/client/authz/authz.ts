@@ -34,7 +34,7 @@ export class Authz {
       warn: (message: string, ...meta: unknown[]) => void;
     } = {
       info: (message: string, ...meta: unknown[]) => {
-        console.log(message, ...meta);
+        console.info(message, ...meta);
       },
       error: (message: string, ...meta: unknown[]) => {
         console.error(message, ...meta);

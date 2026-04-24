@@ -1,12 +1,17 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsNotEmpty,
+  IsNumber,
   IsObject,
   IsOptional,
   IsString,
+  Matches,
+  MaxLength,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 
@@ -77,6 +82,66 @@ export class AgActionDto {
   hasRender?: boolean;
 }
 
+export class AttachmentDto {
+  @ApiProperty({
+    description:
+      'The content URI (mxc://homeserver/content_id or https://...). Required when eventId is not provided.',
+    required: false,
+    type: String,
+    example: 'mxc://matrix.org/abc123',
+  })
+  @ValidateIf((o) => !o.eventId)
+  @IsNotEmpty({ message: 'Either mxcUri or eventId must be provided' })
+  @IsString()
+  @Matches(/^(mxc|https?):\/\/.+/, {
+    message: 'mxcUri must start with mxc://, http://, or https://',
+  })
+  mxcUri?: string;
+
+  @ApiProperty({
+    description:
+      'Matrix event ID for encrypted file downloads. Required when mxcUri is not provided.',
+    required: false,
+    type: String,
+    example: '$abc123',
+  })
+  @ValidateIf((o) => !o.mxcUri)
+  @IsNotEmpty({ message: 'Either mxcUri or eventId must be provided' })
+  @IsString()
+  @Matches(/^\$/, { message: 'eventId must start with $' })
+  eventId?: string;
+
+  @ApiProperty({
+    description: 'The original filename',
+    required: true,
+    type: String,
+    example: 'report.pdf',
+  })
+  @IsNotEmpty()
+  @IsString()
+  @MaxLength(255)
+  filename: string;
+
+  @ApiProperty({
+    description: 'The MIME type of the file',
+    required: true,
+    type: String,
+    example: 'application/pdf',
+  })
+  @IsNotEmpty()
+  @IsString()
+  mimetype: string;
+
+  @ApiProperty({
+    description: 'The file size in bytes',
+    required: false,
+    type: Number,
+  })
+  @IsOptional()
+  @IsNumber()
+  size?: number;
+}
+
 export class SendMessageDto {
   @ApiProperty({
     description: 'Whether to stream the response',
@@ -127,7 +192,10 @@ export class SendMessageDto {
   })
   @IsOptional()
   @IsObject()
-  metadata?: Record<string, unknown> & { editorRoomId?: string };
+  metadata?: Record<string, unknown> & {
+    editorRoomId?: string;
+    spaceId?: string;
+  };
 
   @ApiProperty({
     description: 'User timezone (e.g., "America/New_York" or "UTC-5")',
@@ -161,6 +229,18 @@ export class SendMessageDto {
   @IsOptional()
   @IsObject()
   mcpInvocations?: Record<string, string>;
+
+  @ApiProperty({
+    description: 'File attachments uploaded to Matrix (max 10)',
+    required: false,
+    type: [AttachmentDto],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => AttachmentDto)
+  attachments?: AttachmentDto[];
 }
 
 export class SendMessagePayload {
@@ -177,6 +257,7 @@ export class SendMessagePayload {
   metadata?: {
     editorRoomId?: string;
     currentEntityDid?: string;
+    spaceId?: string;
   };
 
   /**
@@ -184,6 +265,8 @@ export class SendMessagePayload {
    * Map of tool names (e.g., "postgres__query") to base64-encoded CAR invocations
    */
   mcpInvocations?: Record<string, string>;
+
+  attachments?: AttachmentDto[];
 }
 
 export class AbortRequestDto {

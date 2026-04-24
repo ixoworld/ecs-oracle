@@ -5,6 +5,7 @@ import {
 } from '@langchain/core/messages';
 import { isUUID } from 'class-validator';
 import crypto from 'node:crypto';
+import { emojify } from 'node-emoji';
 
 interface ToolCall {
   name: string;
@@ -12,6 +13,15 @@ interface ToolCall {
   args: unknown;
   status?: 'isRunning' | 'done';
   output?: string;
+}
+
+export interface AttachmentMeta {
+  filename: string;
+  mimetype: string;
+  size?: number;
+  mxcUri?: string;
+  eventId?: string;
+  category: string;
 }
 
 interface MessageDto {
@@ -22,6 +32,7 @@ interface MessageDto {
   reasoning?: string;
   isComplete?: boolean;
   isReasoning?: boolean;
+  attachment?: AttachmentMeta;
 }
 
 export interface ListOracleMessagesResponse {
@@ -36,6 +47,7 @@ export interface CleanAdditionalKwargs {
     type: string;
     text: string;
   }>;
+  attachment?: AttachmentMeta;
   [key: string]: unknown; // Allow additional properties for LangChain compatibility
 }
 
@@ -55,9 +67,13 @@ export function transformGraphStateMessageToListMessageResponse(
           message.additional_kwargs as CleanAdditionalKwargs;
         const reasoning = additionalKwargs?.reasoning;
 
+        // Extract attachment metadata for human messages
+        const attachment =
+          message.type === 'human' ? additionalKwargs?.attachment : undefined;
+
         acc.push({
           type: message.type === 'ai' ? 'ai' : 'human',
-          content: String(message.content),
+          content: emojify(String(message.content)),
           id: uuidFromString(message.id ?? String(message.content)),
           toolCalls: (message as AIMessage).tool_calls?.map((toolCall) => ({
             name: toolCall.name,
@@ -68,6 +84,7 @@ export function transformGraphStateMessageToListMessageResponse(
           reasoning,
           isComplete: true, // Messages from DB are always complete
           isReasoning: false, // since this is not a reasoning message and the request is done
+          ...(attachment && { attachment }),
         });
       }
       if (toolMsg) {

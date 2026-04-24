@@ -1,4 +1,4 @@
-import { getOpenRouterChatModel } from '@ixo/common';
+import { getProviderChatModel } from '../llm-provider';
 import {
   getFirecrawlMcpTools,
   getMemoryEngineMcpTools,
@@ -14,7 +14,12 @@ Core expectations:
 - Always search first; never assume context that you have not confirmed in memory.
 - When you add new information, prefer precise, well-structured memories that reference who, what, when, and why.
 - Only delete or clear memories when explicitly asked or when they are proven incorrect or duplicated.
-- When uncertain, ask for clarification instead of guessing.
+
+Task discipline:
+- You are a sub-agent invoked by the main agent. You receive a single task message — that is ALL the context you have.
+- If the task is unclear, ambiguous, or missing critical details (IDs, names, scope, what to do), do NOT guess. Instead, STOP immediately and return a clear message explaining what information you need. The main agent will ask the user and re-invoke you with a complete task.
+- Never loop or retry the same failing approach. If something fails twice, return the error and stop.
+- Complete the requested task and STOP. Do not do additional unrequested work.
 `.trim();
 
 export const knowledgeAgentPrompt = `
@@ -36,6 +41,7 @@ Workflow guidelines:
 2. When new user-specific context should be preserved, add it as a personal memory that references the latest conversation or event.
 3. Keep responses concise and cite the memory IDs you touched when possible.
 4. When users ask about organizations or entities, prioritize searching organization knowledge rather than personal memories so you reflect the canonical view.
+5. You also have Firecrawl tools for web scraping. Use them when you need to fetch content from a URL to enrich a memory (e.g., scraping a doc page to store as org knowledge).
 `.trim();
 
 export const orgOwnerKnowledgeAgentPrompt = `
@@ -75,11 +81,9 @@ Workflow guidelines:
 7. If conflicting org memories are found, resolve the conflict or flag it clearly with links to each memory.
 `.trim();
 
-const llm = getOpenRouterChatModel({
-  model: 'openai/gpt-oss-120b:nitro',
+const llm = getProviderChatModel('subagent', {
   __includeRawResponse: true,
   modelKwargs: {
-    require_parameters: true,
     include_reasoning: true,
   },
   reasoning: {
@@ -88,20 +92,19 @@ const llm = getOpenRouterChatModel({
 });
 
 export const createMemoryAgent = async ({
-  userDid,
-  oracleDid,
-  roomId,
+  headers,
   mode,
+  userDid,
+  sessionId,
 }: {
-  userDid: string;
-  oracleDid: string;
-  roomId: string;
+  /** Pre-built auth headers (UCAN or Matrix) including x-room-id */
+  headers: Record<string, string>;
   mode: 'user' | 'orgOwner';
+  userDid: string;
+  sessionId: string;
 }): Promise<AgentSpec> => {
   const memoryEngineTools = await getMemoryEngineMcpTools({
-    userDid,
-    oracleDid,
-    roomId,
+    headers,
     selectedTools: [
       'memory-engine__search_memory_engine',
       'memory-engine__add_memory',
@@ -127,5 +130,7 @@ export const createMemoryAgent = async ({
         ? 'AI Agent that manages knowledge across three scopes: (1) User memories (private, personal to each user), (2) Organization public knowledge (accessible to customers/public users), and (3) Organization private knowledge (internal company only). Can search and add memories to all scopes. For org owners: when adding organization knowledge, must confirm scope (public/private) with owner before adding.'
         : 'AI Agent that manages knowledge across three scopes: (1) User memories (private, personal to each user), (2) Organization public knowledge (read-only, accessible to customers/public), and (3) Organization private knowledge (read-only, internal company only). Can search all scopes and add personal user memories only.',
     middleware: [],
+    userDid,
+    sessionId,
   };
 };

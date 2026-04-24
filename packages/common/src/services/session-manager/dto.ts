@@ -32,6 +32,11 @@ export class ListChatSessionsDto extends UserAuthDto {
   @IsOptional()
   @Min(0)
   offset?: number;
+
+  /** Filter sessions by roomId. When set, only sessions in this room are returned. */
+  @IsString()
+  @IsOptional()
+  roomId?: string;
 }
 
 export class CreateChatSessionDto extends UserAuthDto {
@@ -50,6 +55,31 @@ export class CreateChatSessionDto extends UserAuthDto {
   @IsString()
   @IsOptional()
   slackThreadTs?: string;
+
+  @IsString()
+  @IsOptional()
+  oracleToken?: string;
+
+  @IsString()
+  @IsOptional()
+  userToken?: string;
+
+  @IsString()
+  @IsOptional()
+  oracleHomeServer?: string;
+
+  @IsString()
+  @IsOptional()
+  userHomeServer?: string;
+
+  @IsString()
+  @IsOptional()
+  ucanInvocation?: string;
+
+  /** Override the roomId stored on the session (e.g. task-specific room). */
+  @IsString()
+  @IsOptional()
+  roomId?: string;
 }
 
 export class DeleteChatSessionDto extends UserAuthDto {

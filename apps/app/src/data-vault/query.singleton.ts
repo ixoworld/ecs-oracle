@@ -13,7 +13,8 @@ import { DataVaultQueryService } from './query.service';
  * 3. Use with createOracleRetrievalTools() to create LangChain tools
  */
 
-const queryServiceSingleton = createSingleton<DataVaultQueryService>('DataVaultQuery');
+const queryServiceSingleton =
+  createSingleton<DataVaultQueryService>('DataVaultQuery');
 
 /**
  * Set the DataVaultQuery service instance (called from NestJS module)

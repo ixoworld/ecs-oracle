@@ -88,6 +88,23 @@ export interface DataAnalysisResult {
  * Provides intelligent analysis of MCP responses using a sub-agent.
  * Uses strategic sampling to understand data semantics without processing entire datasets.
  */
+/**
+ * Directed hint passed back to the sub-agent on retry after an extraction
+ * failure. Keyed by toolName so consecutive calls for the same tool can
+ * correct themselves even though the sub-agent is otherwise deterministic.
+ */
+interface FailedAttempt {
+  /** Paths the sub-agent returned last time, which didn't resolve to arrays */
+  paths: string[];
+  /** Actual top-level keys of the response */
+  topLevelKeys: string[];
+  /** When this failure was recorded */
+  at: number;
+}
+
+/** Failure hints expire after this window so they don't apply to unrelated future calls. */
+const FAILURE_HINT_TTL_MS = 10 * 60 * 1000;
+
 @Injectable()
 export class DataAnalysisService {
   private readonly logger = new Logger(DataAnalysisService.name);
@@ -95,6 +112,59 @@ export class DataAnalysisService {
   // Cache key: `${toolName}:${hash(toolArgs)}` -> DataAnalysisResult
   // TTL: 24 hours (structures rarely change)
   // This would reduce sub-agent calls by ~80-90% after first invocation per tool+args combo
+
+  private readonly failedAttempts = new Map<string, FailedAttempt>();
+
+  /**
+   * Record a failed extraction so the next analyzeData call for this tool
+   * can prepend a hint into the sub-agent's system prompt. Called by the
+   * MCP tool wrapper when offload_all/_array was requested but 0 rows
+   * ended up in the vault.
+   */
+  recordFailedAnalysis(
+    toolName: string,
+    paths: string[],
+    topLevelKeys: string[],
+  ): void {
+    this.failedAttempts.set(toolName, {
+      paths,
+      topLevelKeys,
+      at: Date.now(),
+    });
+  }
+
+  /**
+   * Clear the failure record for a tool. Called by the wrapper after a
+   * successful offload so the hint doesn't leak into unrelated future calls.
+   */
+  clearFailedAnalysis(toolName: string): void {
+    this.failedAttempts.delete(toolName);
+  }
+
+  /**
+   * Build a directed hint for the sub-agent if this tool had a recent failure.
+   * Returns empty string when there's nothing relevant to hint about.
+   */
+  private buildFailureHint(toolName: string): string {
+    const prior = this.failedAttempts.get(toolName);
+    if (!prior) return '';
+    if (Date.now() - prior.at > FAILURE_HINT_TTL_MS) {
+      this.failedAttempts.delete(toolName);
+      return '';
+    }
+    return `
+
+---
+⚠️ **PREVIOUS ATTEMPT FAILED FOR THIS TOOL** (\`${toolName}\`)
+
+Your last analysis returned dataExtractionPaths = ${JSON.stringify(prior.paths)}.
+NONE of those paths resolved to an array of row objects.
+
+The response's actual top-level keys were: ${JSON.stringify(prior.topLevelKeys)}.
+
+Look at those keys carefully. The array you need is one of them (or nested under one of them). Pick a DIFFERENT path this time — do not return the same paths as before.
+`;
+  }
 
   /**
    * Analyze MCP response using strategic sampling and sub-agent
@@ -111,7 +181,9 @@ export class DataAnalysisService {
       //   return cached;
       // }
 
-      this.logger.log(`Analysis starting: tool=${request.context.toolName} size=${(request.metadata.totalSizeBytes / 1024).toFixed(2)}KB rows=${request.metadata.estimatedRows || 'unknown'}`);
+      this.logger.log(
+        `Analysis starting: tool=${request.context.toolName} size=${(request.metadata.totalSizeBytes / 1024).toFixed(2)}KB rows=${request.metadata.estimatedRows || 'unknown'}`,
+      );
 
       // Create sub-agent instance
       const agent = await createDataAnalysisAgent();
@@ -119,15 +191,23 @@ export class DataAnalysisService {
       // Build analysis prompt with samples and context
       const analysisPrompt = this.buildAnalysisPrompt(request);
 
-
       // Validate agent has model
       if (!agent.model || typeof agent.model === 'string') {
         throw new Error('Agent model is not properly initialized');
       }
 
+      // Append a retry hint if we recently failed extraction for this tool.
+      const hint = this.buildFailureHint(request.context.toolName);
+      const systemPrompt = agent.systemPrompt + hint;
+      if (hint) {
+        this.logger.log(
+          `Retry hint attached for tool=${request.context.toolName} (prior paths failed to resolve)`,
+        );
+      }
+
       // Call the model with system prompt + user prompt
       const response = await agent.model.invoke([
-        { role: 'system' as const, content: agent.systemPrompt },
+        { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: analysisPrompt },
       ]);
 
@@ -158,7 +238,9 @@ export class DataAnalysisService {
       const result = this.parseAnalysisResponse(textContent);
 
       const duration = Date.now() - startTime;
-      this.logger.log(`Analysis complete: ${result.offloadRecommendation} ${result.dataType} (${duration}ms)`);
+      this.logger.log(
+        `Analysis complete: ${result.offloadRecommendation} ${result.dataType} (${duration}ms)`,
+      );
 
       // TODO: Store in cache
       // await this.storeInCache(cacheKey, result);

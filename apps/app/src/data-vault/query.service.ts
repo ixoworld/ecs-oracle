@@ -178,7 +178,9 @@ export class DataVaultQueryService implements OnModuleInit, OnModuleDestroy {
     const { handleId, sql, userDid, accessToken } = params;
     const startTime = Date.now();
 
-    this.logger.log(`Query: handle=${handleId} user=${userDid.slice(-8)} sql="${sql.substring(0, 80)}..."`);
+    this.logger.log(
+      `Query: handle=${handleId} user=${userDid.slice(-8)} sql="${sql.substring(0, 80)}..."`,
+    );
 
     // Retrieve and validate data
     const entry = await this.getVaultEntry(handleId, userDid, accessToken);
@@ -205,7 +207,9 @@ export class DataVaultQueryService implements OnModuleInit, OnModuleDestroy {
       const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
       const truncated = rows.length >= this.MAX_RESULT_ROWS;
 
-      this.logger.log(`Query complete: ${rows.length} rows in ${executionTimeMs}ms`);
+      this.logger.log(
+        `Query complete: ${rows.length} rows in ${executionTimeMs}ms`,
+      );
 
       return {
         rows,
@@ -226,10 +230,14 @@ export class DataVaultQueryService implements OnModuleInit, OnModuleDestroy {
    * @param params Retrieval parameters
    * @returns Full data with metadata
    */
-  async retrieveFullData(params: RetrieveFullDataParams): Promise<RetrieveResult> {
+  async retrieveFullData(
+    params: RetrieveFullDataParams,
+  ): Promise<RetrieveResult> {
     const { handleId, userDid, accessToken, limit } = params;
 
-    this.logger.log(`RetrieveFull: handle=${handleId} user=${userDid.slice(-8)} limit=${limit ?? 'none'}`);
+    this.logger.log(
+      `RetrieveFull: handle=${handleId} user=${userDid.slice(-8)} limit=${limit ?? 'none'}`,
+    );
 
     // Retrieve and validate data
     const entry = await this.getVaultEntry(handleId, userDid, accessToken);
@@ -249,7 +257,9 @@ export class DataVaultQueryService implements OnModuleInit, OnModuleDestroy {
     const sizeBytes = Buffer.byteLength(JSON.stringify(data), 'utf8');
     const estimatedTokens = Math.ceil(sizeBytes / 4);
 
-    this.logger.log(`Retrieved: ${data.length} rows, ${(sizeBytes / 1024).toFixed(2)}KB (~${estimatedTokens} tokens)`);
+    this.logger.log(
+      `Retrieved: ${data.length} rows, ${(sizeBytes / 1024).toFixed(2)}KB (~${estimatedTokens} tokens)`,
+    );
 
     return {
       data,
@@ -296,7 +306,10 @@ export class DataVaultQueryService implements OnModuleInit, OnModuleDestroy {
   /**
    * Load array data into a DuckDB temporary table
    */
-  private async loadDataIntoTable(tableName: string, data: unknown[]): Promise<void> {
+  private async loadDataIntoTable(
+    tableName: string,
+    data: unknown[],
+  ): Promise<void> {
     if (!Array.isArray(data) || data.length === 0) {
       throw new Error('Data must be a non-empty array');
     }
@@ -327,11 +340,14 @@ export class DataVaultQueryService implements OnModuleInit, OnModuleDestroy {
             const val = record[col];
             if (val === null || val === undefined) return 'NULL';
             if (typeof val === 'string') return `'${val.replace(/'/g, "''")}'`;
-            if (typeof val === 'object') return `'${JSON.stringify(val).replace(/'/g, "''")}'`;
+            if (typeof val === 'object')
+              return `'${JSON.stringify(val).replace(/'/g, "''")}'`;
             return String(val);
           })
           .join(', ');
-        await this.connection.run(`INSERT INTO ${tableName} VALUES (${values})`);
+        await this.connection.run(
+          `INSERT INTO ${tableName} VALUES (${values})`,
+        );
       }
 
       this.logger.debug(`   Loaded ${data.length} rows into ${tableName}`);
@@ -344,7 +360,9 @@ export class DataVaultQueryService implements OnModuleInit, OnModuleDestroy {
   /**
    * Run query with timeout protection
    */
-  private async runQueryWithTimeout(sql: string): Promise<Record<string, unknown>[]> {
+  private async runQueryWithTimeout(
+    sql: string,
+  ): Promise<Record<string, unknown>[]> {
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
         reject(new Error(`Query timeout after ${this.QUERY_TIMEOUT_MS}ms`));
@@ -356,7 +374,9 @@ export class DataVaultQueryService implements OnModuleInit, OnModuleDestroy {
         const reader = await this.connection.runAndReadAll(sql);
         const rows = reader.getRowObjects() as Record<string, unknown>[];
         // Convert BigInt values to Numbers for JSON serialization
-        return rows.map(row => convertBigIntToNumber(row) as Record<string, unknown>);
+        return rows.map(
+          (row) => convertBigIntToNumber(row) as Record<string, unknown>,
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         throw new Error(`Query failed: ${message}`);

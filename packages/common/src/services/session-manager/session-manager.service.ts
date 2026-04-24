@@ -2,7 +2,12 @@ import { Logger } from '@ixo/logger';
 import { MatrixManager } from '@ixo/matrix';
 import { getMatrixHomeServerCroppedForDid } from '@ixo/oracles-chain-client';
 import { type Database } from 'better-sqlite3';
-import { getChatOpenAiModel } from '../../ai/index.js';
+import {
+  getChatOpenAiModel,
+  getLLMProvider,
+  getOpenRouterChatModel,
+  getProviderConfig,
+} from '../../ai/index.js';
 import { type MemoryEngineService } from '../memory-engine/memory-engine.service.js';
 import { type UserContextData } from '../memory-engine/types.js';
 import {
@@ -41,18 +46,28 @@ export class SessionManagerService {
     if (messages.length === 0) {
       return 'Untitled';
     }
-    const llm = getChatOpenAiModel({
-      model: 'meta-llama/llama-3.1-8b-instruct',
-      temperature: 0.3,
-      apiKey: process.env.OPEN_ROUTER_API_KEY,
-      timeout: 20 * 1000 * 60, // 20 minutes
-      configuration: {
-        baseURL: 'https://openrouter.ai/api/v1',
-      },
-    });
+    const provider = getLLMProvider();
+    const config = getProviderConfig();
+
+    const llm =
+      provider === 'openrouter'
+        ? getOpenRouterChatModel({
+            model: 'meta-llama/llama-3.1-8b-instruct',
+            temperature: 0.3,
+            timeout: 60_000,
+          })
+        : getChatOpenAiModel({
+            model: 'meta-llama/Meta-Llama-3.1-8B-Instruct',
+            temperature: 0.3,
+            apiKey: config.apiKey,
+            timeout: 60_000,
+            configuration: {
+              baseURL: config.baseURL,
+            },
+          });
     const response = await llm.invoke(
-      `Based on this messages messages, Add a title for this convo and only based on the messages? MAKE SURE TO ONLY RESPOND WITH THE TITLE. 
-      
+      `Based on this messages messages, Add a title for this convo and only based on the messages? MAKE SURE TO ONLY RESPOND WITH THE TITLE.
+
       ## RESPONSE FORMAT
       ONLY RESPOND WITH THE TITLE not anything else that title will be saved to the store directly from your response so generated based on the messages.
 
@@ -125,7 +140,7 @@ ___________________________________________________________
     messages,
     oracleEntityDid,
     oracleName,
-    roomId: _roomId,
+    roomId,
     lastProcessedCount,
     oracleDid,
     userContext,
@@ -158,6 +173,7 @@ ___________________________________________________________
         oracleEntityDid,
         oracleDid,
         userContext,
+        roomId,
         slackThreadTs,
       };
 
@@ -165,8 +181,8 @@ ___________________________________________________________
       db.prepare(
         `
         INSERT INTO sessions (
-          session_id, title, last_updated_at, created_at, oracle_name, 
-          oracle_did, oracle_entity_did, last_processed_count, 
+          session_id, title, last_updated_at, created_at, oracle_name,
+          oracle_did, oracle_entity_did, last_processed_count,
           user_context, room_id, slack_thread_ts
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -203,6 +219,19 @@ ___________________________________________________________
         })
       : selectedSession.title;
 
+    if (allowTitleUpdate && roomId && title) {
+      this.matrixManger
+        .editMessage({
+          messageId: sessionId,
+          roomId,
+          message: title,
+          isOracleAdmin: true,
+        })
+        .catch((err) => {
+          Logger.error('Failed to update conversation title in Matrix:', err);
+        });
+    }
+
     const lastUpdatedAt = new Date().toISOString();
     const updatedSession: ChatSession = {
       ...selectedSession,
@@ -214,7 +243,7 @@ ___________________________________________________________
 
     db.prepare(
       `
-      UPDATE sessions 
+      UPDATE sessions
       SET title = ?, last_updated_at = ?, last_processed_count = ?, slack_thread_ts = ?
       WHERE session_id = ?
     `,
@@ -237,11 +266,11 @@ ___________________________________________________________
     const db = await this.syncService.getUserDatabase(did);
     const row = db
       .prepare(
-        `SELECT 
+        `SELECT
           session_id, title, last_updated_at, created_at, oracle_name,
           oracle_did, oracle_entity_did, last_processed_count,
           user_context, room_id, slack_thread_ts
-         FROM sessions 
+         FROM sessions
          WHERE session_id = ?`,
       )
       .get(sessionId) as
@@ -297,19 +326,32 @@ ___________________________________________________________
     const limit = listSessionsDto.limit ?? 20;
     const offset = listSessionsDto.offset ?? 0;
 
-    // Get paginated sessions with total count
-    const rows = db
-      .prepare(
-        `SELECT 
+    // Get paginated sessions with total count, optionally filtered by roomId
+    const hasRoomFilter = !!listSessionsDto.roomId;
+    const sql = hasRoomFilter
+      ? `SELECT
           session_id, title, last_updated_at, created_at, oracle_name,
           oracle_did, oracle_entity_did, last_processed_count,
           user_context, room_id, slack_thread_ts,
           COUNT(*) OVER() as total
-         FROM sessions 
+         FROM sessions
+         WHERE room_id = ?
          ORDER BY last_updated_at DESC
-         LIMIT ? OFFSET ?`,
-      )
-      .all(limit, offset) as Array<{
+         LIMIT ? OFFSET ?`
+      : `SELECT
+          session_id, title, last_updated_at, created_at, oracle_name,
+          oracle_did, oracle_entity_did, last_processed_count,
+          user_context, room_id, slack_thread_ts,
+          COUNT(*) OVER() as total
+         FROM sessions
+         ORDER BY last_updated_at DESC
+         LIMIT ? OFFSET ?`;
+
+    const params = hasRoomFilter
+      ? [listSessionsDto.roomId, limit, offset]
+      : [limit, offset];
+
+    const rows = db.prepare(sql).all(...params) as Array<{
       session_id: string;
       title: string | null;
       last_updated_at: string;
@@ -346,34 +388,52 @@ ___________________________________________________________
 
   public async createSession(
     createSessionDto: CreateChatSessionDto,
+    overrideEventId?: string,
   ): Promise<CreateChatSessionResponseDto> {
     const userHomeServer =
       createSessionDto.homeServer ||
       (await getMatrixHomeServerCroppedForDid(createSessionDto.did));
-    const { roomId } = await this.matrixManger.getOracleRoomIdWithHomeServer({
-      userDid: createSessionDto.did,
-      oracleEntityDid: createSessionDto.oracleEntityDid,
-      userHomeServer,
-    });
+
+    // Use the provided roomId override (e.g. task-specific room),
+    // or fall back to resolving the user's main oracle room.
+    let roomId = createSessionDto.roomId;
+    if (!roomId) {
+      const resolved = await this.matrixManger.getOracleRoomIdWithHomeServer({
+        userDid: createSessionDto.did,
+        oracleEntityDid: createSessionDto.oracleEntityDid,
+        userHomeServer,
+      });
+      roomId = resolved.roomId;
+    }
 
     if (!roomId) {
       throw new Error('Room ID not found');
     }
-    const eventId = await this.matrixManger.sendMessage({
-      message: 'New Conversation Started',
-      roomId,
-      isOracleAdmin: true,
-    });
+    const eventId =
+      overrideEventId ??
+      (await this.matrixManger.sendMessage({
+        message: 'New Conversation Started',
+        roomId,
+        isOracleAdmin: true,
+      }));
 
     // Gather user context from Memory Engine
     let userContext: UserContextData | undefined;
-    if (this.memoryEngineService) {
+    if (
+      this.memoryEngineService &&
+      (createSessionDto.ucanInvocation ||
+        (createSessionDto.oracleToken && createSessionDto.userToken))
+    ) {
       try {
         Logger.debug('Gathering user context from Memory Engine');
         userContext = await this.memoryEngineService.gatherUserContext({
           oracleDid: createSessionDto.oracleDid,
-          userDid: createSessionDto.did,
           roomId,
+          oracleToken: createSessionDto.oracleToken ?? '',
+          userToken: createSessionDto.userToken ?? '',
+          oracleHomeServer: createSessionDto.oracleHomeServer ?? '',
+          userHomeServer: createSessionDto.userHomeServer ?? '',
+          ucanInvocation: createSessionDto.ucanInvocation,
         });
       } catch (error) {
         Logger.error('Failed to gather user context:', error);

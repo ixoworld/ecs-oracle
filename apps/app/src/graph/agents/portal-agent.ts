@@ -1,13 +1,11 @@
-import { getOpenRouterChatModel } from '@ixo/common';
+import { getProviderChatModel } from '../llm-provider';
 import { type DynamicStructuredTool, type StructuredTool } from 'langchain';
 
 import type { AgentSpec } from './subagent-as-tool';
 
-const llm = getOpenRouterChatModel({
-  model: 'openai/gpt-oss-120b:nitro',
+const llm = getProviderChatModel('subagent', {
   __includeRawResponse: true,
   modelKwargs: {
-    require_parameters: true,
     include_reasoning: true,
   },
   reasoning: {
@@ -28,16 +26,20 @@ Core expectations:
   and clearly communicate next steps or follow-up questions.
 - Respect safety, data-privacy, and authorization boundaries described by each
   tool.
+
+Task discipline:
+- You are a sub-agent invoked by the main agent. You receive a single task message — that is ALL the context you have.
+- If the task is unclear, ambiguous, or missing critical details (IDs, names, scope, what to do), do NOT guess. Instead, STOP immediately and return a clear message explaining what information you need. The main agent will ask the user and re-invoke you with a complete task.
+- Never loop or retry the same failing approach. If something fails twice, return the error and stop.
+- Complete the requested task and STOP. Do not do additional unrequested work.
 `.trim();
 
 const workflowGuidelines = `
 ### Workflow
 1. Clarify the user's goal and map it to one (or more) portal tools.
-2. Call \`help\` or consult the tool description if you are unsure how it works.
-3. Pass parameters exactly as documented; never guess IDs or omit required
-   fields.
-4. Summarize results back to the user, highlighting any outstanding actions or
-   follow-ups.
+2. Consult each tool's description before invoking it — verify required inputs.
+3. Pass parameters exactly as documented; never guess IDs or omit required fields.
+4. Summarize results back to the user, highlighting any outstanding actions or follow-ups.
 5. If no tool can satisfy the request, explain why and suggest alternatives.
 `.trim();
 
@@ -76,7 +78,7 @@ ${extraInstructions ? `### Additional Instructions\n${extraInstructions}` : ''}
 const buildPortalDescription = (tools: StructuredTool[]): string => {
   const names =
     tools.map((tool) => tool.name).join(', ') || 'no configured tools';
-  return `Specialized Portal Agent that executes user-facing portal/UI supported actions are (${names}).`;
+  return `Specialized Portal Agent that executes user-facing portal/UI actions. Supported actions: (${names}).`;
 };
 
 export type PortalAgentInstance = AgentSpec;
@@ -87,7 +89,12 @@ export interface CreatePortalAgentParams {
 
 export const createPortalAgent = async ({
   tools,
-}: CreatePortalAgentParams): Promise<PortalAgentInstance> => {
+  userDid,
+  sessionId,
+}: CreatePortalAgentParams & {
+  userDid: string;
+  sessionId: string;
+}): Promise<PortalAgentInstance> => {
   const toolsDoc = formatToolDocs(tools);
 
   const systemPrompt = buildPortalPrompt({
@@ -101,5 +108,7 @@ export const createPortalAgent = async ({
     systemPrompt,
     model: llm,
     middleware: [],
+    userDid,
+    sessionId,
   };
 };

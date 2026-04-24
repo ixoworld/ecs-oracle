@@ -10,7 +10,10 @@ import {
   type MessageEvent,
   type MessageEventContent,
 } from '@ixo/matrix';
-import { getMatrixHomeServerCroppedForDid } from '@ixo/oracles-chain-client';
+import {
+  getMatrixHomeServerCroppedForDid,
+  OpenIdTokenProvider,
+} from '@ixo/oracles-chain-client';
 import {
   ActionCallEvent,
   ReasoningEvent,
@@ -28,16 +31,30 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
-import { AIMessageChunk, ToolMessage } from 'langchain';
+import { SqliteSaver } from '@ixo/sqlite-saver';
+import {
+  AIMessageChunk,
+  HumanMessage,
+  type BaseMessage,
+  ToolMessage,
+} from 'langchain';
+import { emojify } from 'node-emoji';
 import * as crypto from 'node:crypto';
 import { MainAgentGraph } from 'src/graph';
 import { cleanAdditionalKwargs } from 'src/graph/nodes/chat-node/utils';
 import { type TMainAgentGraphState } from 'src/graph/state';
+import { ApprovalService } from 'src/tasks/approval.service';
+import {
+  classifyApprovalResponse,
+  type ApprovalClassification,
+} from 'src/tasks/processors/processor-utils';
+import { TasksService } from 'src/tasks/task.service';
+import { isRedisEnabled } from 'src/config';
 import { type ENV } from 'src/types';
 import { UcanService } from 'src/ucan/ucan.service';
 import { UserMatrixSqliteSyncService } from 'src/user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
 import { normalizeDid } from 'src/utils/header.utils';
-import { runWithSSEContext } from 'src/utils/sse-context';
+import { emitSSEEvent, runWithSSEContext } from 'src/utils/sse-context';
 import {
   formatSSE,
   sendSSEDone,
@@ -45,14 +62,39 @@ import {
   setSSEHeaders,
   startSSEHeartbeat,
 } from 'src/utils/sse.utils';
+import { TokenLimiter } from 'src/utils/token-limit-handler';
 import { type ListMessagesDto } from './dto/list-messages.dto';
 import { type SendMessagePayload } from './dto/send-message.dto';
+import {
+  FileProcessingService,
+  type SandboxUploadConfig,
+} from './file-processing.service';
 
 @Injectable()
 export class MessagesService implements OnModuleInit, OnModuleDestroy {
   private cleanUpMatrixListener: () => void;
   private threadRootCache = new Map<string, string>(); // eventId → rootEventId
   private abortControllers = new Map<string, AbortController>(); // sessionId → AbortController
+  private readonly oracleOpenIdTokenProvider: OpenIdTokenProvider;
+  private readonly oracleMatrixBaseUrl: string;
+
+  /**
+   * Per-thread debounce buffer for Matrix events.
+   * When a user sends text + file, Matrix delivers them as separate events.
+   * We batch events arriving within MATRIX_DEBOUNCE_MS into a single sendMessage() call.
+   */
+  private matrixEventBuffer = new Map<
+    string,
+    {
+      events: Array<{
+        event: MessageEvent<MessageEventContent>;
+        roomId: string;
+      }>;
+      timer: NodeJS.Timeout;
+    }
+  >();
+
+  private readonly MATRIX_DEBOUNCE_MS = 500;
 
   matrixManager: MatrixManager;
 
@@ -61,13 +103,34 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
     private readonly sessionManagerService: SessionManagerService,
     private readonly config: ConfigService<ENV>,
     private readonly checkpointStorageSyncService: UserMatrixSqliteSyncService,
+    private readonly fileProcessingService: FileProcessingService,
+    @Optional() private readonly tasksService?: TasksService,
+    @Optional() private readonly approvalService?: ApprovalService,
     @Optional() private readonly ucanService?: UcanService,
   ) {
     this.matrixManager = this.sessionManagerService.matrixManger;
+    this.oracleMatrixBaseUrl = this.config
+      .getOrThrow<string>('MATRIX_BASE_URL')
+      .replace(/\/$/, '');
+    this.oracleOpenIdTokenProvider = new OpenIdTokenProvider({
+      matrixAccessToken: this.config.getOrThrow(
+        'MATRIX_ORACLE_ADMIN_ACCESS_TOKEN',
+      ),
+      homeServerUrl: this.oracleMatrixBaseUrl,
+      matrixUserId: this.config.getOrThrow('MATRIX_ORACLE_ADMIN_USER_ID'),
+    });
   }
 
   public onModuleDestroy(): void {
-    this.cleanUpMatrixListener();
+    // Clear all pending debounce timers to prevent flushes after destroy
+    for (const [, entry] of this.matrixEventBuffer) {
+      clearTimeout(entry.timer);
+    }
+    this.matrixEventBuffer.clear();
+
+    if (this.cleanUpMatrixListener) {
+      this.cleanUpMatrixListener();
+    }
   }
 
   private async getThreadRoot(
@@ -160,6 +223,14 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
     return fallbackRoot;
   }
 
+  /** Supported Matrix file message types */
+  private static readonly FILE_MSGTYPES = new Set([
+    'm.file',
+    'm.image',
+    'm.video',
+    'm.audio',
+  ]);
+
   private async handleMessage(
     event: MessageEvent<MessageEventContent>,
     roomId: string,
@@ -167,64 +238,395 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
     const did = normalizeDid(event.sender);
     const isBot = did === this.config.getOrThrow('ORACLE_DID');
     if (isBot) {
+      Logger.log(
+        `[Matrix][handleMessage] Ignoring message from bot (DID: ${did})`,
+      );
       return;
     }
 
-    if (
-      event.content.msgtype === 'm.text' &&
-      'body' in event.content &&
-      typeof event.content.body === 'string' &&
-      !('INTERNAL' in event.content)
-    ) {
-      const text = event.content.body;
-      const threadId = await this.getThreadRoot(event, roomId);
+    // Skip internal messages
+    if ('INTERNAL' in event.content) {
+      Logger.log(
+        `[Matrix][handleMessage] Ignoring INTERNAL message eventId=${event.eventId} sender=${event.sender}`,
+      );
+      return;
+    }
 
-      if (!threadId) {
+    const msgtype = event.content.msgtype;
+    const isText =
+      msgtype === 'm.text' &&
+      'body' in event.content &&
+      typeof event.content.body === 'string';
+    const isFile =
+      typeof msgtype === 'string' && MessagesService.FILE_MSGTYPES.has(msgtype);
+    const threadId = await this.getThreadRoot(event, roomId);
+    if (!threadId) {
+      Logger.warn(
+        `[Matrix][handleMessage] Could not find thread root for eventId=${event.eventId} roomId=${roomId}, aborting`,
+      );
+      return;
+    }
+
+    const threadEv = await this.matrixManager.getEventById(roomId, threadId);
+    const langchainThreadId = (threadEv.content as any)?.sessionId;
+    const sessionId = threadId;
+    if (!isText && !isFile) {
+      Logger.log(
+        `[Matrix][handleMessage] Ignoring non-text, non-file message: eventId=${event.eventId} msgtype=${msgtype} sender=${event.sender}`,
+      );
+      return;
+    }
+
+    // ── Approval gate interception ────────────────────────────────
+    // If this is a text reply and we have an ApprovalService, check
+    // if it's a response to a pending approval request.
+    if (isText && this.approvalService) {
+      Logger.log(
+        `[Matrix][handleMessage] isText=${isText} and approvalService exists, attempting approval response classification check`,
+      );
+      const body = 'body' in event.content ? String(event.content.body) : '';
+      const classification = await this.tryHandleApprovalResponse(
+        body,
+        did,
+        roomId,
+      );
+      if (classification) {
+        Logger.log(
+          `[Matrix][handleMessage] Handled as approval response (${classification.decision}), skipping normal flow`,
+        );
+        return;
+      }
+    } else {
+      Logger.log('[Matrix][handleMessage] bypass approvalService ', {
+        approvalService: !!this.approvalService,
+        isText,
+      });
+    }
+
+    Logger.log(
+      `[Matrix][handleMessage] Processing message eventId=${event.eventId} roomId=${roomId} threadId=${threadId} sender=${event.sender} sessionId=${sessionId ?? event.eventId}`,
+    );
+
+    const checkSessionId = sessionId ?? event.eventId;
+    let hasSession: ChatSession | undefined;
+    try {
+      hasSession = await this.sessionManagerService.getSession(
+        checkSessionId,
+        did,
+        false,
+      );
+      if (hasSession) {
+        Logger.log(
+          `[Matrix][handleMessage] FOUND existing session for did=${did} sessionId=${checkSessionId} (threadId=${threadId})`,
+        );
+      } else {
+        Logger.log(
+          `[Matrix][handleMessage] No existing session found for did=${did} sessionId=${checkSessionId} (threadId=${threadId}), will create new session`,
+        );
+      }
+    } catch (err) {
+      Logger.error(
+        `[Matrix][handleMessage] Error checking for session did=${did} sessionId=${checkSessionId}`,
+        err,
+      );
+    }
+
+    if (!hasSession) {
+      const userHomeServer = event.sender.split(':').slice(1).join(':');
+      const oracleHomeServer = this.config
+        .getOrThrow<string>('MATRIX_BASE_URL')
+        .replace(/\/$/, '')
+        .replace(/^https?:\/\//, '');
+
+      try {
+        Logger.log(
+          `[Matrix][handleMessage] Creating NEW session for did=${did} sessionId=${checkSessionId} homeServer=${userHomeServer} oracleHomeServer=${oracleHomeServer}`,
+        );
+        await this.sessionManagerService.createSession(
+          {
+            did,
+            oracleDid: this.config.getOrThrow('ORACLE_DID'),
+            oracleEntityDid: this.config.getOrThrow('ORACLE_ENTITY_DID'),
+            oracleName: this.config.getOrThrow('ORACLE_NAME'),
+            homeServer: userHomeServer,
+            oracleHomeServer,
+            userHomeServer,
+            roomId, // Store the actual room (may be a task room, not main room)
+          },
+          event.eventId,
+        );
+        Logger.log(
+          `[Matrix][handleMessage] Session CREATED for did=${did} sessionId=${checkSessionId}`,
+        );
+      } catch (err) {
+        Logger.error(
+          `[Matrix][handleMessage] Error creating session for did=${did} sessionId=${checkSessionId}`,
+          err,
+        );
+        return;
+      }
+    }
+
+    // Buffer the event — the debounce timer will flush once no more events arrive
+    const existing = this.matrixEventBuffer.get(threadId);
+    if (existing) {
+      Logger.log(
+        `[Matrix][handleMessage] Found existing buffer for threadId=${threadId}, appending eventId=${event.eventId}`,
+      );
+      clearTimeout(existing.timer);
+      existing.events.push({ event, roomId });
+    } else {
+      Logger.log(
+        `[Matrix][handleMessage] Creating new buffer for threadId=${threadId} with eventId=${event.eventId}`,
+      );
+      this.matrixEventBuffer.set(threadId, {
+        events: [{ event, roomId }],
+        timer: null as unknown as NodeJS.Timeout,
+      });
+    }
+
+    const entry = this.matrixEventBuffer.get(threadId)!;
+    entry.timer = setTimeout(() => {
+      Logger.log(
+        `[Matrix][handleMessage] Debounce timer elapsed for threadId=${threadId}, flushing events (sessionId=${sessionId})`,
+      );
+      this.flushMatrixEvents(threadId, langchainThreadId).catch((err) => {
+        Logger.error(
+          `Failed to flush Matrix events for thread ${threadId}`,
+          err,
+        );
+      });
+    }, this.MATRIX_DEBOUNCE_MS);
+  }
+
+  /**
+   * Flush all buffered Matrix events for a thread into a single sendMessage() call.
+   * Separates text messages from file attachments and batches them together.
+   */
+  private async flushMatrixEvents(
+    threadId: string,
+    overRideSessionId?: string,
+  ): Promise<void> {
+    const entry = this.matrixEventBuffer.get(threadId);
+    if (!entry) {
+      Logger.warn(
+        `[Matrix][flushMatrixEvents] No event buffer for threadId=${threadId}`,
+      );
+      return;
+    }
+    this.matrixEventBuffer.delete(threadId);
+
+    const { events } = entry;
+    if (events.length === 0) {
+      Logger.warn(
+        `[Matrix][flushMatrixEvents] No events to flush for threadId=${threadId}`,
+      );
+      return;
+    }
+
+    // Use the roomId from the first event (all events in a thread share the same room)
+    const roomId = events[0].roomId;
+    const did = normalizeDid(events[0].event.sender);
+    const homeServer = events[0].event.sender.split(':')[1];
+
+    // Separate text and file events
+    let textBody: string | undefined;
+    const attachments: Array<{
+      eventId: string;
+      filename: string;
+      mimetype: string;
+      size?: number;
+    }> = [];
+
+    for (const { event } of events) {
+      const msgtype = event.content.msgtype;
+
+      if (
+        msgtype === 'm.text' &&
+        'body' in event.content &&
+        typeof event.content.body === 'string'
+      ) {
+        // Use the last text message if multiple arrive (unlikely but safe)
+        textBody = event.content.body;
+      } else if (
+        typeof msgtype === 'string' &&
+        MessagesService.FILE_MSGTYPES.has(msgtype)
+      ) {
+        attachments.push(this.buildAttachmentFromEvent(event));
+      }
+    }
+
+    // Build the message text — fall back to a description if only files were sent
+    const message =
+      textBody ??
+      (attachments.length === 1
+        ? `User shared a file: ${attachments[0].filename}`
+        : `User shared ${attachments.length} file(s): ${attachments.map((a) => a.filename).join(', ')}`);
+
+    try {
+      Logger.log(
+        `[Matrix][flushMatrixEvents] Sending message for threadId=${threadId} sessionId=${overRideSessionId ?? threadId} did=${did} attachments=${attachments.length}`,
+      );
+      const aiMessage = await this.sendMessage({
+        clientType: 'matrix',
+        message,
+        did,
+        sessionId: threadId,
+        overrideLangchainThreadId: overRideSessionId,
+        homeServer,
+        msgFromMatrixRoom: true,
+        userMatrixOpenIdToken: '',
+
+        ...(attachments.length > 0 && { attachments }),
+      });
+      if (!aiMessage) {
+        Logger.warn(
+          `[Matrix][flushMatrixEvents] sendMessage did not return a message for threadId=${threadId}`,
+        );
         return;
       }
 
-      try {
-        const homeServer = event.sender.split(':')[1];
-        const aiMessage = await this.sendMessage({
-          clientType: 'matrix',
-          message: text,
-          did,
-          sessionId: threadId,
-          homeServer,
-          msgFromMatrixRoom: true,
-          userMatrixOpenIdToken: '',
-        });
-        if (!aiMessage) {
-          return;
-        }
-
-        // Send AI response to Matrix
-        await this.sessionManagerService.matrixManger.sendMessage({
-          message: aiMessage.message.content,
-          roomId,
-          threadId,
-          isOracleAdmin: true,
-          disablePrefix: true,
-        });
-      } catch (error) {
-        Logger.error('Failed to send message', error);
-        await this.sessionManagerService.matrixManger.sendMessage({
-          message: `sorry, I'm having trouble processing your message. Please try again later.`,
-          roomId,
-          threadId,
-          isOracleAdmin: true,
-          disablePrefix: true,
-        });
-      }
+      await this.sessionManagerService.matrixManger.sendMessage({
+        message: aiMessage.message.content,
+        roomId,
+        threadId,
+        isOracleAdmin: true,
+        disablePrefix: true,
+      });
+      Logger.log(
+        `[Matrix][flushMatrixEvents] Message sent to Matrix roomId=${roomId} threadId=${threadId} by Oracle`,
+      );
+    } catch (error) {
+      Logger.error('Failed to send message', error);
     }
   }
 
+  /**
+   * Build an AttachmentDto-compatible object from a Matrix file event.
+   * Uses eventId (not mxcUri) because downloadFromMatrixEvent handles both
+   * encrypted and unencrypted files transparently.
+   */
+  private buildAttachmentFromEvent(event: MessageEvent<MessageEventContent>): {
+    eventId: string;
+    filename: string;
+    mimetype: string;
+    size?: number;
+  } {
+    const content = event.content as unknown as Record<string, unknown>;
+    const info = content.info as
+      | { mimetype?: string; size?: number }
+      | undefined;
+    return {
+      eventId: event.eventId,
+      filename:
+        (content.filename as string) ?? (content.body as string) ?? 'file',
+      mimetype: info?.mimetype ?? 'application/octet-stream',
+      size: info?.size,
+    };
+  }
+
+  /**
+   * Check if a message is a response to a pending approval request.
+   * Uses a single Redis GET for fast lookup — no Y.Doc or task scanning.
+   *
+   * Works for both Portal and Matrix paths:
+   * 1. First checks if there's a pending approval in the room (cheap — no LLM call)
+   * 2. If pending approval found, uses LLM classifier to determine intent
+   * 3. Delegates to ApprovalService if the user is approving/rejecting
+   *
+   * Returns the classification if handled, null otherwise.
+   */
+  private async tryHandleApprovalResponse(
+    messageText: string,
+    userDid: string,
+    roomId: string,
+  ): Promise<ApprovalClassification | null> {
+    if (!this.approvalService) {
+      Logger.log(
+        '[ApprovalGate] No approvalService instance, skipping approval response check.',
+      );
+      return null;
+    }
+
+    try {
+      // Fast path: single Redis GET to check if this room has a pending approval
+      const pendingTaskId =
+        await this.approvalService.getPendingTaskForRoom(roomId);
+      if (!pendingTaskId) {
+        Logger.log(
+          `[ApprovalGate] No pending approval for roomId=${roomId}, returning null.`,
+        );
+        return null;
+      }
+
+      // There IS a pending approval — classify the message with a cheap LLM
+      const classification = await classifyApprovalResponse(messageText);
+      if (!classification) {
+        Logger.log(
+          `[ApprovalGate] LLM classification returned null for messageText="${messageText}", skipping approval handling.`,
+        );
+        return null;
+      }
+
+      Logger.log(
+        `[ApprovalGate] LLM classified message as ${classification.decision}${classification.reason ? ` (reason: ${classification.reason})` : ''} for task ${pendingTaskId}`,
+      );
+
+      // Resolve main room for the task update
+      const userHomeServer = await getMatrixHomeServerCroppedForDid(userDid);
+      const { roomId: mainRoomId } =
+        await this.sessionManagerService.matrixManger.getOracleRoomIdWithHomeServer(
+          {
+            userDid,
+            oracleEntityDid: this.config.getOrThrow('ORACLE_ENTITY_DID'),
+            userHomeServer,
+          },
+        );
+
+      if (!mainRoomId) {
+        Logger.log(
+          `[ApprovalGate] Could not resolve mainRoomId for userDid=${userDid}, oracleEntityDid=${this.config.getOrThrow('ORACLE_ENTITY_DID')}, userHomeServer=${userHomeServer}; skipping approval handling.`,
+        );
+        return null;
+      }
+
+      await this.approvalService.handleApprovalResponse({
+        taskId: pendingTaskId,
+        approved: classification.decision === 'approved',
+        mainRoomId,
+        rejectionReason: classification.reason,
+      });
+
+      return classification;
+    } catch (err) {
+      Logger.error(
+        `[ApprovalGate] Error handling approval response: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      // Rethrow so the error propagates — silently falling through to
+      // normal chat processing would send "yes"/"no" to the LLM agent
+      // and leave approval state inconsistent.
+      throw err;
+    }
+
+    return null;
+  }
+
   public async onModuleInit(): Promise<void> {
-    this.cleanUpMatrixListener =
-      this.sessionManagerService.matrixManger.onMessage((roomId, event) => {
-        this.handleMessage(event, roomId).catch((err) => {
-          Logger.error(err);
-        });
+    // Don't block server startup — defer listener until Matrix is ready.
+    // matrixManager.init() is idempotent: returns the existing promise if already in progress.
+    this.sessionManagerService.matrixManger
+      .init()
+      .then(() => {
+        this.cleanUpMatrixListener =
+          this.sessionManagerService.matrixManger.onMessage((roomId, event) => {
+            this.handleMessage(event, roomId).catch((err) => {
+              Logger.error(err);
+            });
+          });
+        Logger.log('Matrix message listener registered');
+      })
+      .catch((err) => {
+        Logger.error('Failed to set up Matrix message listener:', err);
       });
   }
   public async listMessages(
@@ -233,52 +635,23 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
       homeServer?: string;
     },
   ): Promise<ListOracleMessagesResponse> {
-    const { did, sessionId, homeServer } = params;
+    const { did, sessionId } = params;
     if (!sessionId || !did) {
       throw new BadRequestException('Invalid parameters');
     }
 
     this.checkpointStorageSyncService.markUserActive(did);
     try {
-      const userHomeServer =
-        homeServer || (await getMatrixHomeServerCroppedForDid(did));
-      const { roomId } =
-        await this.sessionManagerService.matrixManger.getOracleRoomIdWithHomeServer(
-          {
-            userDid: did,
-            oracleEntityDid: this.config.getOrThrow('ORACLE_ENTITY_DID'),
-            userHomeServer,
-          },
-        );
-
-      if (!roomId) {
-        throw new NotFoundException('Room not found or Invalid Session Id');
-      }
-
-      const config: IRunnableConfigWithRequiredFields & { sessionId: string } =
-        {
-          configurable: {
-            thread_id: sessionId,
-            configs: {
-              matrix: {
-                roomId,
-                oracleDid: this.config.getOrThrow<string>('ORACLE_DID'),
-                homeServerName: userHomeServer,
-              },
-              user: {
-                did,
-              },
-            },
-          },
-          sessionId,
-        };
-
-      const state = await this.mainAgent.getGraphState(config);
-
-      if (!state) {
-        return transformGraphStateMessageToListMessageResponse([]);
-      }
-      return transformGraphStateMessageToListMessageResponse(state.messages);
+      const db = await this.checkpointStorageSyncService.getUserDatabase(did);
+      const saver = SqliteSaver.fromDatabase(db);
+      const tuple = await saver.getTuple({
+        configurable: { thread_id: sessionId },
+      });
+      const messages =
+        (tuple?.checkpoint?.channel_values?.messages as
+          | BaseMessage[]
+          | undefined) ?? [];
+      return transformGraphStateMessageToListMessageResponse(messages);
     } finally {
       this.checkpointStorageSyncService.markUserInactive(did);
     }
@@ -289,6 +662,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
       res?: Response;
       clientType?: 'matrix' | 'slack';
       msgFromMatrixRoom?: boolean;
+      overrideLangchainThreadId?: string;
       req?: Request;
     },
   ): Promise<
@@ -307,8 +681,162 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
     this.checkpointStorageSyncService.markUserActive(params.did);
 
     try {
-      const { runnableConfig, sessionId, roomId, userContext, targetSession } =
-        await this.prepareForQuery(params);
+      // Run prepareForQuery and oracle token fetch in parallel
+      const hasAttachments = !!params.attachments?.length;
+      const needsSandbox = hasAttachments && !!params.userMatrixOpenIdToken;
+
+      const [queryResult, oracleToken] = await Promise.all([
+        this.prepareForQuery(params),
+        needsSandbox
+          ? this.oracleOpenIdTokenProvider
+              .getToken()
+              .catch((error: unknown) => {
+                Logger.warn(
+                  `Failed to get oracle token: ${error instanceof Error ? error.message : String(error)}`,
+                  'MessagesService',
+                );
+                return undefined;
+              })
+          : Promise.resolve(undefined),
+      ]);
+
+      const {
+        runnableConfig,
+        sessionId,
+        roomId,
+        homeServerName,
+        userContext,
+        targetSession,
+      } = queryResult;
+
+      // ── Portal approval gate interception ───────────────────────
+      // Check if this message is a response to a pending approval.
+      // Only check for portal clients (Matrix is handled in handleMessage).
+      if (!params.msgFromMatrixRoom && roomId && this.approvalService) {
+        const classification = await this.tryHandleApprovalResponse(
+          params.message,
+          params.did,
+          roomId,
+        );
+        if (classification) {
+          Logger.log(
+            `[ApprovalGate] Portal message handled as approval response (${classification.decision})`,
+          );
+          return {
+            message: {
+              type: 'ai',
+              content:
+                classification.decision === 'rejected'
+                  ? 'Result rejected. Re-running the task with your feedback…'
+                  : 'Result approved and delivered.',
+              id: crypto.randomUUID(),
+            },
+            sessionId,
+          };
+        }
+      }
+
+      // Build messages array: user text message + separate file messages
+      const msgFromMatrixRoom = params.msgFromMatrixRoom ?? false;
+      const timestamp = new Date().toISOString();
+      const inputMessages: HumanMessage[] = [
+        new HumanMessage({
+          content: params.message,
+          additional_kwargs: { msgFromMatrixRoom, timestamp },
+        }),
+      ];
+
+      if (hasAttachments) {
+        Logger.log(
+          `sendMessage: ${params.attachments!.length} attachment(s) received for session ${sessionId}, room ${roomId}`,
+          'MessagesService',
+        );
+
+        // Build sandbox config using pre-fetched oracle token and cached homeServer
+        let sandboxConfig: SandboxUploadConfig | undefined;
+        if (oracleToken && params.userMatrixOpenIdToken) {
+          try {
+            sandboxConfig = {
+              sandboxMcpUrl: this.config.getOrThrow<string>('SANDBOX_MCP_URL'),
+              userToken: params.userMatrixOpenIdToken,
+              oracleToken,
+              homeServerName,
+              oracleHomeServerUrl: this.oracleMatrixBaseUrl.replace(
+                /^https?:\/\//,
+                '',
+              ),
+            };
+          } catch (error) {
+            Logger.warn(
+              `Failed to build sandbox config: ${error instanceof Error ? error.message : String(error)}`,
+              'MessagesService',
+            );
+          }
+        }
+
+        const { texts, metadata, totalUsage } =
+          await this.fileProcessingService.processAttachments(
+            params.attachments!,
+            roomId,
+            sandboxConfig,
+          );
+
+        // Deduct credits for file processing API calls
+        if (
+          totalUsage &&
+          !this.config.get('DISABLE_CREDITS') &&
+          isRedisEnabled()
+        ) {
+          try {
+            const credits =
+              totalUsage.cost > 0
+                ? TokenLimiter.usdCostToCredits(totalUsage.cost)
+                : TokenLimiter.llmTokenToCredits(
+                    totalUsage.promptTokens + totalUsage.completionTokens,
+                  );
+            if (credits > 0 && params.did) {
+              await TokenLimiter.limit(params.did, credits);
+              Logger.log(
+                `[FileProcessing] Deducted ${credits} credits (did=${params.did})`,
+                'MessagesService',
+              );
+            }
+          } catch (error) {
+            // Non-blocking: file was already processed, log and continue
+            Logger.warn(
+              `[FileProcessing] Failed to deduct credits: ${error instanceof Error ? error.message : String(error)}`,
+              'MessagesService',
+            );
+          }
+        }
+
+        Logger.log(
+          `sendMessage: attachments processed — ${texts.length} text result(s), creating separate messages`,
+          'MessagesService',
+        );
+        texts.forEach((text, i) => {
+          const meta = metadata[i];
+          // Prepend source reference so the agent can use process_file
+          // with the correct eventId/url if it needs to re-process later
+          const sourceRef = meta.eventId
+            ? `[source: eventId="${meta.eventId}"]`
+            : meta.mxcUri
+              ? `[source: url="${meta.mxcUri}"]`
+              : '';
+          const content = sourceRef ? `${sourceRef}\n${text}` : text;
+
+          inputMessages.push(
+            new HumanMessage({
+              content,
+              additional_kwargs: {
+                msgFromMatrixRoom,
+                timestamp: new Date().toISOString(),
+                attachment: meta,
+              },
+            }),
+          );
+        });
+      }
 
       if (!params.msgFromMatrixRoom) {
         this.sessionManagerService.matrixManger
@@ -362,30 +890,59 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
             params.res,
             async () => {
               // send thinking event to give the user faster feedback
-              const _thinkingEvent = ReasoningEvent.createChunk(
+              const thinkingText =
+                [
+                  'Thinking...',
+                  'Working...',
+                  'Analyzing...',
+                  'Processing...',
+                  'Computing...',
+                  'Crunching...',
+                  'Deliberating...',
+                  'Reasoning...',
+                  'Calculating...',
+                  'Evaluating...',
+                  'Pondering...',
+                  'Reading...',
+                  'Synthesizing...',
+                  'Formulating...',
+                  'Considering...',
+                  'Exploring ideas...',
+                  'Investigating...',
+                  'Brainstorming...',
+                  'Solving...',
+                  'Reviewing...',
+                  'Reflecting...',
+                ].at((Math.random() * 100) % 10) ?? 'thinking...';
+              const thinkingEvent = ReasoningEvent.createChunk(
                 sessionId,
                 runnableConfig.configurable.requestId ?? '',
-                'Thinking...',
-                undefined,
+                thinkingText,
+                [{ type: 'thinking', text: thinkingText }],
                 false,
               );
+              emitSSEEvent(thinkingEvent);
+              thinkingEvent.emit();
 
-              const stream = await this.mainAgent.streamMessage(
-                params.message,
+              const stream = await this.mainAgent.streamMessage({
+                input: inputMessages,
                 runnableConfig,
-                params.tools ?? [],
-                params.msgFromMatrixRoom,
-                userContext,
+                browserTools: params.tools ?? [],
+                msgFromMatrixRoom,
+                initialUserContext: userContext,
                 abortController,
-                params.metadata?.editorRoomId,
-                params.metadata?.currentEntityDid,
-                params.agActions ?? [],
+                editorRoomId: params.metadata?.editorRoomId,
+                currentEntityDid: params.metadata?.currentEntityDid,
+                agActions: params.agActions ?? [],
                 // UCAN options for MCP tool authorization
-                {
+                ucanOptions: {
                   ucanService: this.ucanService,
                   mcpInvocations: params.mcpInvocations,
                 },
-              );
+                fileProcessingService: this.fileProcessingService,
+                spaceId: params.metadata?.spaceId,
+                tasksService: this.tasksService,
+              });
 
               let fullContent = '';
               if (params.sessionId) {
@@ -414,8 +971,9 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
                       );
 
                       if (actionCallEvent) {
-                        actionCallEvent.payload.output =
-                          toolMessage.content as string;
+                        actionCallEvent.payload.output = emojify(
+                          toolMessage.content as string,
+                        );
                         actionCallEvent.payload.toolCallId =
                           toolMessage.tool_call_id;
 
@@ -467,8 +1025,9 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
                         if (!toolCallEvent) {
                           continue;
                         }
-                        toolCallEvent.payload.output =
-                          toolMessage.content as string;
+                        toolCallEvent.payload.output = emojify(
+                          toolMessage.content as string,
+                        );
                         toolCallEvent.payload.status = 'done';
                         (
                           toolCallEvent.payload.args as Record<string, unknown>
@@ -507,13 +1066,16 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
                             choices?: Array<{
                               delta?: {
                                 reasoning?: string;
+                                reasoning_content?: string;
                                 reasoning_details?: unknown;
                               };
                             }>;
                           }
                         | undefined;
+
+                      const delta = rawResponse?.choices?.[0]?.delta;
                       const reasoning =
-                        rawResponse?.choices?.[0]?.delta?.reasoning;
+                        delta?.reasoning ?? delta?.reasoning_content;
                       if (reasoning && isChatNode) {
                         if (reasoning && reasoning.trim()) {
                           // Use cleanAdditionalKwargs to extract and clean reasoning details
@@ -629,7 +1191,8 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
                         continue;
                       }
                       if (isChatNode) {
-                        fullContent += String(content);
+                        const parsed = emojify(String(content));
+                        fullContent += parsed;
                         // Send message chunk as SSE
                         if (!params.res) {
                           throw new Error('Response not found');
@@ -640,7 +1203,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
                         ) {
                           params.res.write(
                             formatSSE('message', {
-                              content: String(content),
+                              content: parsed,
                               timestamp: new Date().toISOString(),
                             }),
                           );
@@ -664,7 +1227,10 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
                       .catch((err) => {
                         Logger.error(
                           'Failed to replay API AI response message to matrix room',
-                          err,
+                          {
+                            err,
+                            sessionId,
+                          },
                         );
                       });
                   } else {
@@ -762,16 +1328,24 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      const result = await this.mainAgent.sendMessage(
-        params.message,
+      const result = await this.mainAgent.sendMessage({
+        input: inputMessages,
         runnableConfig,
-        params.tools ?? [],
-        params.msgFromMatrixRoom,
-        userContext,
-        params.metadata?.editorRoomId,
-        params.metadata?.currentEntityDid,
-        params.clientType,
-      );
+        browserTools: params.tools ?? [],
+        msgFromMatrixRoom,
+        initialUserContext: userContext,
+        editorRoomId: params.metadata?.editorRoomId,
+        currentEntityDid: params.metadata?.currentEntityDid,
+        clientType: params.clientType,
+        // UCAN options for MCP tool authorization
+        ucanOptions: {
+          ucanService: this.ucanService,
+          mcpInvocations: params.mcpInvocations,
+        },
+        fileProcessingService: this.fileProcessingService,
+        spaceId: params.metadata?.spaceId,
+        tasksService: this.tasksService,
+      });
       const lastMessage = result.messages.at(-1);
       if (!lastMessage) {
         throw new BadRequestException('No message returned from the oracle');
@@ -788,7 +1362,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
           .catch((err) => {
             Logger.error(
               'Failed to replay API AI response message to matrix room',
-              err,
+              { err, sessionId },
             );
           });
       }
@@ -938,10 +1512,14 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async prepareForQuery(
-    payload: SendMessagePayload & { req?: Request },
+    payload: SendMessagePayload & {
+      req?: Request;
+      overrideLangchainThreadId?: string;
+    },
   ): Promise<{
     sessionId: string;
     roomId: string;
+    homeServerName: string;
     runnableConfig: IRunnableConfigWithRequiredFields & {
       configurable: {
         sessionId: string;
@@ -957,15 +1535,17 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
         ? (payload.requestId as string)
         : crypto.randomUUID();
 
-    await this.checkpointStorageSyncService.syncLocalStorageFromMatrixStorage({
-      userDid: did,
-    });
+    // Resolve homeServer once — used for room lookup and config
+    const homeServerName =
+      payload.homeServer || (await getMatrixHomeServerCroppedForDid(did));
 
-    const targetSession = await this.sessionManagerService.getSession(
-      sessionId,
-      did,
-      false,
-    );
+    // Run sync and session lookup in parallel — they're independent
+    const [, targetSession] = await Promise.all([
+      this.checkpointStorageSyncService.syncLocalStorageFromMatrixStorage({
+        userDid: did,
+      }),
+      this.sessionManagerService.getSession(sessionId, did, false),
+    ]);
 
     if (!targetSession) {
       throw new NotFoundException('Session not found');
@@ -974,14 +1554,12 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
     // Use cached roomId if available, otherwise fetch it
     let roomId = targetSession?.roomId;
     if (!roomId) {
-      const userHomeServer =
-        payload.homeServer || (await getMatrixHomeServerCroppedForDid(did));
       const roomResult =
         await this.sessionManagerService.matrixManger.getOracleRoomIdWithHomeServer(
           {
             userDid: did,
             oracleEntityDid: this.config.getOrThrow('ORACLE_ENTITY_DID'),
-            userHomeServer,
+            userHomeServer: homeServerName,
           },
         );
       roomId = roomResult.roomId;
@@ -1002,16 +1580,14 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
       };
     } = {
       configurable: {
-        thread_id: sessionId,
+        thread_id: payload.overrideLangchainThreadId ?? sessionId,
         requestId,
-        sessionId,
+        sessionId: payload.overrideLangchainThreadId ?? sessionId,
         configs: {
           matrix: {
             roomId,
             oracleDid: this.config.getOrThrow<string>('ORACLE_DID'),
-            homeServerName:
-              payload.homeServer ||
-              (await getMatrixHomeServerCroppedForDid(did)),
+            homeServerName,
           },
           user: {
             did,
@@ -1025,6 +1601,7 @@ export class MessagesService implements OnModuleInit, OnModuleDestroy {
 
     return {
       roomId,
+      homeServerName,
       runnableConfig,
       sessionId,
       userContext: targetSession?.userContext,

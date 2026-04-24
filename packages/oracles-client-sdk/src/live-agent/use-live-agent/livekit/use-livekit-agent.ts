@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 import {
   DeviceUnsupportedError,
   ExternalE2EEKeyProvider,
@@ -152,6 +153,7 @@ export function useLiveKitAgent(
             callEndedAt,
           }),
         },
+        oracleDid,
       );
 
       return response;

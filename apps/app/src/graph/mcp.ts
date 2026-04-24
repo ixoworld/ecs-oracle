@@ -232,7 +232,7 @@ export const createMCPClient = (
     return client;
   } catch (error) {
     Logger.error('Failed to create MCP client:', error);
-    throw error;
+    return undefined;
   }
 };
 
@@ -324,7 +324,10 @@ export const createMCPClientAndGetToolsWithUCAN = async (
 ): Promise<StructuredTool[]> => {
   try {
     // Check allowlist first if dataVaultContext provides userDid
-    if (dataVaultContext?.userDid && !ALLOWED_MCP_DIDS.includes(dataVaultContext.userDid)) {
+    if (
+      dataVaultContext?.userDid &&
+      !ALLOWED_MCP_DIDS.includes(dataVaultContext.userDid)
+    ) {
       Logger.log(`MCP access denied for user: ${dataVaultContext.userDid}`);
       return [];
     }
