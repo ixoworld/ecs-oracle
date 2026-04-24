@@ -288,7 +288,9 @@ export class DataVaultService implements OnModuleInit, OnModuleDestroy {
       Buffer.byteLength(JSON.stringify(data), 'utf8') / 1024
     ).toFixed(2);
 
-    this.logger.log(`Stored: handle=${handleId} user=${userDid.slice(-8)} rows=${data.length} size=${dataSizeKB}KB ttl=${this.config.ttlSeconds}s`);
+    this.logger.log(
+      `Stored: handle=${handleId} user=${userDid.slice(-8)} rows=${data.length} size=${dataSizeKB}KB ttl=${this.config.ttlSeconds}s`,
+    );
 
     return { metadata, handleId };
   }
@@ -353,7 +355,9 @@ export class DataVaultService implements OnModuleInit, OnModuleDestroy {
       const dataSizeKB = (
         Buffer.byteLength(JSON.stringify(entry.fullData), 'utf8') / 1024
       ).toFixed(2);
-      this.logger.log(`Retrieved: rows=${entry.fullData.length} size=${dataSizeKB}KB grace=${this.config.gracePeriodSeconds}s`);
+      this.logger.log(
+        `Retrieved: rows=${entry.fullData.length} size=${dataSizeKB}KB grace=${this.config.gracePeriodSeconds}s`,
+      );
 
       return entry.fullData;
     } catch (error) {
@@ -375,7 +379,9 @@ export class DataVaultService implements OnModuleInit, OnModuleDestroy {
     userDid: string,
     accessToken?: string,
   ): Promise<{ data: unknown[]; metadata: DataVaultMetadata } | null> {
-    this.logger.log(`RetrieveWithMetadata: handle=${handleId} user=${userDid.slice(-8)}`);
+    this.logger.log(
+      `RetrieveWithMetadata: handle=${handleId} user=${userDid.slice(-8)}`,
+    );
 
     const key = `${this.VAULT_PREFIX}${handleId}`;
 
@@ -422,7 +428,9 @@ export class DataVaultService implements OnModuleInit, OnModuleDestroy {
       const dataSizeKB = (
         Buffer.byteLength(JSON.stringify(entry.fullData), 'utf8') / 1024
       ).toFixed(2);
-      this.logger.log(`Retrieved: rows=${entry.fullData.length} size=${dataSizeKB}KB grace=${this.config.gracePeriodSeconds}s`);
+      this.logger.log(
+        `Retrieved: rows=${entry.fullData.length} size=${dataSizeKB}KB grace=${this.config.gracePeriodSeconds}s`,
+      );
 
       return {
         data: entry.fullData,

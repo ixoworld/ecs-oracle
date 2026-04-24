@@ -31,7 +31,9 @@ export class WsService implements OnModuleInit, OnModuleDestroy {
 
     const connections = this.sessionConnections.get(sessionId);
     connections?.add(socket);
-    this.logger.log(`Session ${sessionId.slice(-8)}: connection added (total: ${connections?.size})`);
+    this.logger.log(
+      `Session ${sessionId.slice(-8)}: connection added (total: ${connections?.size})`,
+    );
   }
 
   /**
@@ -65,7 +67,9 @@ export class WsService implements OnModuleInit, OnModuleDestroy {
     const connections = this.sessionConnections.get(sessionId);
     if (connections) {
       connections.delete(socket);
-      this.logger.log(`Session ${sessionId.slice(-8)}: connection removed (remaining: ${connections.size})`);
+      this.logger.log(
+        `Session ${sessionId.slice(-8)}: connection removed (remaining: ${connections.size})`,
+      );
 
       // Clean up empty sessions
       if (connections.size === 0) {

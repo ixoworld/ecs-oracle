@@ -18,6 +18,7 @@ import { createToolValidationMiddleware } from '../middlewares/tool-validation-m
 import {
   AG_UI_TOOLS_DOCUMENTATION,
   AI_ASSISTANT_PROMPT,
+  DATAVAULT_DOCUMENTATION,
   SLACK_FORMATTING_CONSTRAINTS_CONTENT,
 } from '../nodes/chat-node/prompt';
 import { type TMainAgentGraphState } from '../state';
@@ -68,31 +69,6 @@ import {
   createListSkillsTool,
   createSearchSkillsTool,
 } from '../nodes/tools-node/skills-tools';
-import { getComposioTools } from '../nodes/tools-node/tools';
-
-const COMPOSIO_CONTEXT = `## 🔌 External App Tools (Composio)
-
-You can interact with third-party SaaS apps on behalf of the user — Gmail, GitHub, Linear, Notion, Slack, Google Calendar, Sheets, Drive, Jira, HubSpot, and hundreds more.
-
-### When to use Composio
-- User asks to **send/read/search emails** → Composio (Gmail, Outlook)
-- User asks to **create issues, PRs, stars** → Composio (GitHub, Linear, Jira)
-- User asks to **manage calendar events** → Composio (Google Calendar)
-- User asks to **interact with any external SaaS app** → Composio
-- **Skill not found?** → Before giving up, try \`COMPOSIO_SEARCH_TOOLS\` — the capability might exist as an external app tool
-- **Normal conversation / general questions** → Just chat, no tools needed
-
-### How it works (internal — never explain this to the user)
-1. Call \`COMPOSIO_SEARCH_TOOLS\` with what you need (e.g. "send email", "create github issue")
-2. If the toolkit has no active connection → call \`COMPOSIO_MANAGE_CONNECTIONS\`. The authorization UI will appear automatically in the user's interface. Just tell the user: "I need you to connect your [app]. You should see an authorization prompt — once you're done, send me a message and I'll continue." Do NOT paste URLs or links in chat.
-3. Once the user confirms → execute the tool and report results.
-
-### Rules
-- **Never expose internals**: tool counts, toolkit names, connection statuses, schema details — keep all of this in your reasoning. The user sees only results and auth links.
-- **Never invent tool slugs or arguments.** If unclear, call \`COMPOSIO_GET_TOOL_SCHEMAS\`.
-- **Warn before destructive actions** (delete, bulk send, overwrite, revoke) — get user confirmation first.
-- **Handle pagination** until complete when the user asks for "all" results.
-- **Never claim you did something you didn't actually execute.**`;
 
 function buildOracleContext(oc: typeof oracleConfig): string {
   const lines: string[] = [];
@@ -317,32 +293,6 @@ Promise<ReactAgent<any>> => {
     );
   }
 
-  // Build Composio UCAN invocation token.
-  // Audience = composio-worker DID (resolved from COMPOSIO_BASE_URL/.well-known/did.json).
-  // Proofs = [user→oracle delegation]. The worker extracts userDid + oracleDid
-  // from the invocation and builds a composite session user_id.
-  let composioUcan: string | undefined;
-
-  if (ucanService?.hasSigningKey() && configurable.configs?.user?.did) {
-    try {
-      const composioBaseUrl = configService.getOrThrow('COMPOSIO_BASE_URL');
-
-      const invocation = await ucanService.createServiceInvocation(
-        composioBaseUrl,
-        configurable.configs.user.did,
-        'ixo:sandbox',
-      );
-      if (invocation) {
-        composioUcan = invocation;
-        Logger.log('[UCAN] Using UCAN invocation for Composio auth');
-      }
-    } catch (err) {
-      Logger.warn(
-        `[UCAN] Failed to create Composio invocation: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
-
   // Build sandbox upload config for file processing (HTTP upload, no MCP needed)
   // Upload still uses Matrix OpenID tokens (UCAN upload support TODO)
   const sandboxUploadConfig: SandboxUploadConfig | undefined =
@@ -504,7 +454,6 @@ Promise<ReactAgent<any>> => {
     mcpToolsResult,
     sandboxResult,
     taskManagerResult,
-    composioResult,
   ] = await Promise.allSettled([
     createPortalAgent({
       tools:
@@ -545,7 +494,6 @@ Promise<ReactAgent<any>> => {
           spaceId: state.spaceId,
         })
       : Promise.resolve(null),
-    getComposioTools(configurable.configs.user.did, composioUcan),
   ]);
 
   const portalAgent = settled(portalResult, null, 'Portal Agent');
@@ -571,10 +519,9 @@ Promise<ReactAgent<any>> => {
     null,
     'Task Manager Agent',
   );
-  const composioTools = settled(composioResult, [], 'Composio tools');
 
-  // System prompt — built after Promise.allSettled so COMPOSIO_CONTEXT
-  // is populated only when Composio tools actually loaded.
+  // System prompt — built after Promise.allSettled so per-result context
+  // sections are only populated when their services actually loaded.
   const systemPrompt = await AI_ASSISTANT_PROMPT.format({
     APP_NAME:
       oracleConfig.oracleName || configService.get('ORACLE_NAME') || 'Oracle',
@@ -595,7 +542,9 @@ Promise<ReactAgent<any>> => {
       secretIndex.length > 0
         ? secretIndex.map((s) => `- _USER_SECRET_${s.name}`).join('\n')
         : '',
-    COMPOSIO_CONTEXT: composioTools.length > 0 ? COMPOSIO_CONTEXT : '',
+    COMPOSIO_CONTEXT: '',
+    DATAVAULT_DOCUMENTATION:
+      oracleRetrievalTools.length > 0 ? DATAVAULT_DOCUMENTATION : '',
     AG_UI_TOOLS_DOCUMENTATION:
       agActionTools.length > 0 ? AG_UI_TOOLS_DOCUMENTATION : '',
   });
@@ -854,7 +803,6 @@ Promise<ReactAgent<any>> => {
     contextSchema: contextSchema as any,
     tools: [
       ...mcpTools,
-      ...composioTools,
       ...wrappedSandboxTools,
       ...(callAguiAgentTool ? [callAguiAgentTool] : []),
       ...oracleRetrievalTools,

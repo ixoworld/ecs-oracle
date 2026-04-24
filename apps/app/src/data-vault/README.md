@@ -45,16 +45,19 @@ Frontend fetches full data when needed
 ## Key Components
 
 ### 1. Data Analysis Sub-Agent
+
 **File**: `graph/agents/data-analysis-agent.ts`
 
 A specialized sub-agent using Claude Haiku (~$0.0001 per call, 150-350ms latency) to analyze data samples.
 
 **What it receives:**
+
 - Strategic samples from MCP response
 - Context (tool name, args, user query)
 - Basic metadata (size, row count)
 
 **What it returns:**
+
 ```typescript
 {
   semanticDescription: "Personal expense transactions over a year",
@@ -69,27 +72,32 @@ A specialized sub-agent using Claude Haiku (~$0.0001 per call, 150-350ms latency
 ```
 
 ### 2. Data Analysis Service
+
 **File**: `data-vault/data-analysis.service.ts`
 
 Manages sub-agent invocation and strategic sampling logic.
 
 **Key methods:**
+
 - `analyzeData(request)` - Main analysis entry point
 - `createStrategicSamples(data)` - Extract samples from large data
 - `extractBasicMetadata(data)` - Get size, row count, structure
 
 **Caching (TODO):**
+
 - MCP tools typically return consistent structures
 - Cache key: `${toolName}:${hash(toolArgs)}` → `DataAnalysisResult`
 - TTL: 24 hours
 - Expected hit rate: 80-90% after first invocation
 
 ### 3. MCP Tool Wrapper
+
 **File**: `data-vault/mcp-tool-wrapper.ts`
 
 Wraps MCP tools to intercept large responses and trigger analysis.
 
 **Flow:**
+
 1. MCP tool returns large data
 2. Check if offload needed (`shouldOffload`)
 3. Create strategic samples
@@ -98,11 +106,13 @@ Wraps MCP tools to intercept large responses and trigger analysis.
 6. Return enriched metadata to LLM
 
 ### 4. DataVault Service
+
 **File**: `data-vault/data-vault.service.ts`
 
 Stores data and generates metadata with semantic enrichment.
 
 **Enhanced metadata now includes:**
+
 ```typescript
 {
   handleId: "vault-abc-123",
@@ -160,7 +170,7 @@ import { createMCPToolWrapper } from './data-vault/mcp-tool-wrapper';
 // Create wrapper function (once per app)
 const wrapMCPTools = createMCPToolWrapper(
   dataVaultService,
-  dataAnalysisService
+  dataAnalysisService,
 );
 
 // Use per request
@@ -168,19 +178,21 @@ const wrappedTools = wrapMCPTools(
   mcpTools,
   userDid,
   sessionId,
-  userQuery // optional
+  userQuery, // optional
 );
 ```
 
 ## Cost Analysis
 
 ### Without Sub-Agent (Old Approach)
+
 - MCP returns 200k tokens → All sent to LLM
 - Cost per request: ~$0.60 (200k tokens × $3/M)
 - No semantic understanding
 - Manual visualization decisions
 
 ### With Sub-Agent (New Approach)
+
 - MCP returns 200k tokens → Samples (3KB) sent to sub-agent
 - Sub-agent cost: ~$0.0001 (Haiku analyzing 3KB)
 - Metadata to LLM: ~3k tokens
@@ -189,7 +201,9 @@ const wrappedTools = wrapMCPTools(
 - **Bonus: Semantic understanding + viz recommendations**
 
 ### Caching Benefits
+
 With caching (TODO):
+
 - First call: $0.01 + $0.0001 = $0.0101
 - Subsequent calls (cache hit): $0.01 (no sub-agent call)
 - Expected hit rate: 80-90%
@@ -205,6 +219,7 @@ With caching (TODO):
 ## Future Enhancements (TODOs)
 
 ### 1. Caching Layer
+
 **Location**: `data-analysis.service.ts` (lines 17-21, 72-79, 97-106)
 
 Implement caching to avoid re-analyzing identical MCP tool response structures:
@@ -222,22 +237,27 @@ const cacheKey = `${toolName}:${hash(toolArgs)}`;
 ```
 
 **Expected impact:**
+
 - 80-90% cache hit rate after warm-up
 - Sub-agent calls reduced by 80-90%
 - Response time improved by ~200ms on cache hits
 
 ### 2. Adaptive Sampling
+
 Currently uses fixed sampling strategy. Could adapt based on:
+
 - Data size (larger data → more samples)
 - Data complexity (nested structures → targeted sampling)
 - Previous analysis results (focus on interesting regions)
 
 ### 3. Multi-Model Support
+
 - Allow configuration of different models for analysis
 - Use even cheaper models for simple data (e.g., Haiku vs Opus)
 - Use more powerful models for complex structures
 
 ### 4. Analysis Result Streaming
+
 For very large datasets, stream analysis results as they're generated rather than waiting for complete analysis.
 
 ## Configuration
@@ -258,6 +278,7 @@ DATA_VAULT_GRACE_PERIOD_MS=300000      # 5 minutes
 ## Monitoring
 
 Key metrics to track:
+
 - Sub-agent invocation count
 - Sub-agent latency (p50, p95, p99)
 - Cache hit rate (when implemented)
@@ -268,6 +289,7 @@ Key metrics to track:
 ## Testing
 
 TODO: Add tests for:
+
 - Strategic sampling logic
 - Sub-agent response parsing
 - Error handling (sub-agent failures)

@@ -7,6 +7,7 @@ Replaced hardcoded field name extraction with **intelligent path-based extractio
 ## What Changed
 
 ### Before (Restrictive)
+
 ```typescript
 // Hardcoded field names
 const dataFields = ['data', 'results', 'items', 'rows', 'records'];
@@ -18,6 +19,7 @@ for (const field of dataFields) {
 ```
 
 **Problems:**
+
 - Only checked top-level fields
 - Missed nested paths like `response.payload.transactions`
 - Couldn't handle multiple arrays
@@ -25,6 +27,7 @@ for (const field of dataFields) {
 - Lost important metadata/context
 
 ### After (Intelligent)
+
 ```typescript
 // Sub-agent analyzes data and returns:
 {
@@ -42,6 +45,7 @@ const [extracted, modified] = extractDataByPaths(
 ```
 
 **Benefits:**
+
 - Works with any path: `data.users`, `response.payload.items[0].records`
 - Handles multiple extractions: `["data.users", "data.posts"]`
 - Preserves LLM context: `["meta", "pagination", "status"]`
@@ -70,6 +74,7 @@ Return: Preserved context + Vault metadata
 ## Example
 
 **MCP Response:**
+
 ```json
 {
   "status": "success",
@@ -86,6 +91,7 @@ Return: Preserved context + Vault metadata
 ```
 
 **Sub-Agent Returns:**
+
 ```json
 {
   "semanticDescription": "Financial transactions with pagination metadata",
@@ -96,6 +102,7 @@ Return: Preserved context + Vault metadata
 ```
 
 **LLM Receives:**
+
 ```json
 {
   "status": "success",
@@ -116,7 +123,9 @@ Return: Preserved context + Vault metadata
 ## Key Files
 
 ### 1. **extraction-utils.ts** (NEW)
+
 Path-based JSON operations:
+
 - `getByPath(obj, "data.users")` - Get value at path
 - `setByPath(obj, "meta.page", 1)` - Set value at path
 - `extractDataByPaths(obj, paths, preserve)` - Main extraction function
@@ -124,7 +133,9 @@ Path-based JSON operations:
 Clean, optimal implementation - no lodash, no complexity.
 
 ### 2. **data-analysis.service.ts** (ENHANCED)
+
 Added to `DataAnalysisResult`:
+
 ```typescript
 {
   dataExtractionPaths: string[];   // Where to find data
@@ -133,12 +144,15 @@ Added to `DataAnalysisResult`:
 ```
 
 ### 3. **data-analysis-agent.ts** (ENHANCED)
+
 Prompt now instructs sub-agent to return extraction paths:
+
 - Uses dot notation: `"data.transactions"`
 - Empty string for root: `""`
 - Multiple paths: `["data.users", "data.posts"]`
 
 ### 4. **mcp-tool-wrapper.ts** (SIMPLIFIED)
+
 **Before:** 150+ lines with hardcoded logic, fallbacks, filtering
 **After:** ~100 lines, clean flow:
 
@@ -150,6 +164,7 @@ Prompt now instructs sub-agent to return extraction paths:
 ```
 
 **Removed:**
+
 - `extractDataArray()` - hardcoded field checking
 - `filterLargeArrays()` - no longer needed
 - `maxInlineRows` parameter - sub-agent decides
@@ -158,6 +173,7 @@ Prompt now instructs sub-agent to return extraction paths:
 ## Error Handling
 
 **No fallbacks.** If sub-agent fails:
+
 1. Error logged
 2. Exception thrown
 3. Main agent retries or informs user
@@ -183,11 +199,13 @@ The system now handles:
 ## Migration Notes
 
 **Breaking Changes:**
+
 - `MCPWrapperContext` no longer has `maxInlineRows`
 - Sub-agent **must** return `dataExtractionPaths` and `preserveInlinePaths`
 - No fallback behavior - failures throw
 
 **Usage remains the same:**
+
 ```typescript
 const wrappedTools = wrapMCPToolsWithDataVault(mcpTools, {
   userDid,

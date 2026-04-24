@@ -1,10 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { DynamicStructuredTool, type StructuredTool } from 'langchain';
 import { z } from 'zod';
-import {
-  DataVaultService,
-  type SemanticAnalysis,
-} from './data-vault.service';
+import { DataVaultService, type SemanticAnalysis } from './data-vault.service';
 import { DataAnalysisService } from './data-analysis.service';
 import { extractDataByPaths } from './extraction-utils';
 
@@ -63,11 +60,16 @@ function createWrappedTool(
       const result = await originalTool.invoke(input, config);
 
       // Calculate response size
-      const responseString = typeof result === 'string' ? result : JSON.stringify(result);
-      const responseSizeKB = (Buffer.byteLength(responseString, 'utf8') / 1024).toFixed(2);
+      const responseString =
+        typeof result === 'string' ? result : JSON.stringify(result);
+      const responseSizeKB = (
+        Buffer.byteLength(responseString, 'utf8') / 1024
+      ).toFixed(2);
       const responseTokensEstimate = Math.ceil(responseString.length / 4);
 
-      logger.log(`Response: ${responseSizeKB}KB (~${responseTokensEstimate} tokens)`);
+      logger.log(
+        `Response: ${responseSizeKB}KB (~${responseTokensEstimate} tokens)`,
+      );
 
       // Parse JSON if string
       let parsedResult =
@@ -109,10 +111,33 @@ function createWrappedTool(
         }
       }
 
+      // Unwrap MCP CallToolResult envelope.
+      // Tools that declare an outputSchema return their typed payload under
+      // `structuredContent` alongside envelope fields like { type, text,
+      // source_type }. The structured field IS the data we want to analyze
+      // and vault — the rest is protocol metadata. Prefer it when present so
+      // the sub-agent sees the real response shape (e.g. { customers: [...] })
+      // instead of the wrapper shape ({ type, text, structuredContent: {...} }).
+      if (
+        parsedResult &&
+        typeof parsedResult === 'object' &&
+        'structuredContent' in parsedResult &&
+        (parsedResult as Record<string, unknown>).structuredContent !== null &&
+        typeof (parsedResult as Record<string, unknown>).structuredContent ===
+          'object'
+      ) {
+        parsedResult = (parsedResult as Record<string, unknown>)
+          .structuredContent;
+      }
+
       // If no data analysis service, skip intelligent offloading
       if (!dataAnalysis) {
-        logger.warn(`No DataAnalysisService - skipping offload for ${originalTool.name}`);
-        return typeof result === 'string' ? result : JSON.stringify(parsedResult);
+        logger.warn(
+          `No DataAnalysisService - skipping offload for ${originalTool.name}`,
+        );
+        return typeof result === 'string'
+          ? result
+          : JSON.stringify(parsedResult);
       }
 
       // Analyze with sub-agent to get extraction paths and semantics
@@ -129,13 +154,18 @@ function createWrappedTool(
         metadata: basicMetadata,
       });
 
-      logger.log(`Analysis: ${analysisResult.offloadRecommendation} - ${analysisResult.dataType} (${analysisResult.dataExtractionPaths.length} paths)`);
+      logger.log(
+        `Analysis: ${analysisResult.offloadRecommendation} - ${analysisResult.dataType} ` +
+          `extractionPaths=${JSON.stringify(analysisResult.dataExtractionPaths)} ` +
+          `preserveInlinePaths=${JSON.stringify(analysisResult.preserveInlinePaths)}`,
+      );
 
       // If no offload needed, return original
       if (analysisResult.offloadRecommendation === 'keep_inline') {
-        return typeof result === 'string' ? result : JSON.stringify(parsedResult);
+        return typeof result === 'string'
+          ? result
+          : JSON.stringify(parsedResult);
       }
-
 
       // Extract data using paths from sub-agent
       const [extractedData, modifiedResponse] = extractDataByPaths(
@@ -143,7 +173,6 @@ function createWrappedTool(
         analysisResult.dataExtractionPaths,
         analysisResult.preserveInlinePaths,
       );
-
 
       // Store each extracted dataset in vault
       const vaultMetadata: Record<string, unknown> =
@@ -160,7 +189,6 @@ function createWrappedTool(
         const dataSize = Buffer.byteLength(JSON.stringify(data), 'utf8') / 1024;
         totalDataSizeKB += dataSize;
         totalRowsOffloaded += data.length;
-
 
         const semanticAnalysis: SemanticAnalysis = {
           description: analysisResult.semanticDescription,
@@ -187,10 +215,59 @@ function createWrappedTool(
         Object.assign(vaultMetadata, metadata);
       }
 
-      const metadataSize = Buffer.byteLength(JSON.stringify(vaultMetadata), 'utf8') / 1024;
-      const tokenSavings = Math.ceil((parseFloat(responseSizeKB) - metadataSize) * 4);
+      const metadataSize =
+        Buffer.byteLength(JSON.stringify(vaultMetadata), 'utf8') / 1024;
+      const tokenSavings = Math.ceil(
+        (parseFloat(responseSizeKB) - metadataSize) * 4,
+      );
 
-      logger.log(`Offloaded: ${totalRowsOffloaded} rows, ${totalDataSizeKB.toFixed(2)}KB data -> ${metadataSize.toFixed(2)}KB metadata (~${tokenSavings} tokens saved)`);
+      // Sub-agent said offload but extraction found no arrays — paths were wrong.
+      // Surface this to the model so it can retry or tell the user, rather than
+      // silently returning empty metadata or flooding context with raw data.
+      if (totalRowsOffloaded === 0) {
+        const topLevelKeys =
+          parsedResult && typeof parsedResult === 'object'
+            ? Object.keys(parsedResult as Record<string, unknown>)
+            : [];
+
+        // Record the failed attempt so the next analyzeData call for this tool
+        // gets a retry hint in the sub-agent's system prompt. The sub-agent is
+        // otherwise deterministic — without a hint it re-returns the same bad
+        // paths on every retry.
+        if (dataAnalysis) {
+          dataAnalysis.recordFailedAnalysis(
+            originalTool.name,
+            analysisResult.dataExtractionPaths,
+            topLevelKeys,
+          );
+        }
+
+        const diagnostic = {
+          error: 'OFFLOAD_FAILED',
+          message:
+            'The data analysis sub-agent flagged this response for offload, but the extraction paths it returned did not resolve to any arrays. No data was stored in the vault.',
+          attemptedExtractionPaths: analysisResult.dataExtractionPaths,
+          attemptedPreservePaths: analysisResult.preserveInlinePaths,
+          responseSizeKB: parseFloat(responseSizeKB),
+          topLevelKeys,
+          recovery:
+            'Retry the same MCP tool call — the sub-agent has been given a hint about the correct paths and will try different ones on the next attempt. If it fails again, inform the user the response could not be processed.',
+        };
+        logger.error(
+          `Offload failed: sub-agent paths ${JSON.stringify(analysisResult.dataExtractionPaths)} extracted 0 arrays from response with top-level keys ${JSON.stringify(topLevelKeys)}. Hint cached for next retry. Returning error to model.`,
+        );
+        return JSON.stringify(diagnostic);
+      }
+
+      // Successful offload — clear any prior failure hint for this tool so it
+      // doesn't leak into a future call (e.g. if response shape drifts).
+      if (dataAnalysis) {
+        dataAnalysis.clearFailedAnalysis(originalTool.name);
+      }
+
+      logger.log(
+        `Offloaded: ${totalRowsOffloaded} rows, ${totalDataSizeKB.toFixed(2)}KB data -> ${metadataSize.toFixed(2)}KB metadata (~${tokenSavings} tokens saved)`,
+      );
 
       return JSON.stringify(vaultMetadata);
     },

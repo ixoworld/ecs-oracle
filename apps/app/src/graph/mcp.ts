@@ -324,7 +324,10 @@ export const createMCPClientAndGetToolsWithUCAN = async (
 ): Promise<StructuredTool[]> => {
   try {
     // Check allowlist first if dataVaultContext provides userDid
-    if (dataVaultContext?.userDid && !ALLOWED_MCP_DIDS.includes(dataVaultContext.userDid)) {
+    if (
+      dataVaultContext?.userDid &&
+      !ALLOWED_MCP_DIDS.includes(dataVaultContext.userDid)
+    ) {
       Logger.log(`MCP access denied for user: ${dataVaultContext.userDid}`);
       return [];
     }

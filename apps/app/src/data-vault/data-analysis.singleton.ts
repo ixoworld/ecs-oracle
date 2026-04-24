@@ -12,7 +12,8 @@ import { DataAnalysisService } from './data-analysis.service';
  * 2. Graph agents call getDataAnalysisInstance() to access the service
  */
 
-const dataAnalysisSingleton = createSingleton<DataAnalysisService>('DataAnalysis');
+const dataAnalysisSingleton =
+  createSingleton<DataAnalysisService>('DataAnalysis');
 
 /**
  * Set the DataAnalysis service instance (called from NestJS module)
