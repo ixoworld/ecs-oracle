@@ -539,8 +539,8 @@ For AG-UI visualization tools, include BOTH dataHandle and fetchToken.`,
 
       // Calculate numeric statistics
       const numericValues = values.filter(
-        (v) => typeof v === 'number',
-      ) as number[];
+        (v): v is number => typeof v === 'number',
+      );
       if (numericValues.length > 0) {
         stats.min = Math.min(...numericValues);
         stats.max = Math.max(...numericValues);
