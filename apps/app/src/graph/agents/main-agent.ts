@@ -55,20 +55,42 @@ import {
   type FileProcessingService,
   type SandboxUploadConfig,
 } from 'src/messages/file-processing.service';
-import { SecretsService } from 'src/secrets/secrets.service';
+import {
+  SecretsService,
+  type SecretIndexEntry,
+} from 'src/secrets/secrets.service';
 import type { TaskExecutionContext } from 'src/tasks/processors/processor-utils';
 import { type TasksService } from 'src/tasks/task.service';
 import { UserMatrixSqliteSyncService } from 'src/user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
 import z from 'zod';
-import oracleConfig from '../../../oracle.config.json';
+import oracleConfigRaw from '../../../oracle.config.json';
+
+// Normalize optional fields: convert empty strings to undefined so downstream
+// truthiness checks (`if (oracleConfig.model)`) are unambiguous.
+const oracleConfig = {
+  ...oracleConfigRaw,
+  model: oracleConfigRaw.model || undefined,
+  prompt: {
+    opening: oracleConfigRaw.prompt.opening || undefined,
+    communicationStyle: oracleConfigRaw.prompt.communicationStyle || undefined,
+    capabilities: oracleConfigRaw.prompt.capabilities || undefined,
+  },
+};
+import { ChannelMemoryService } from '../../channel-memory/channel-memory.service';
 import { getProviderChatModel } from '../llm-provider';
 import { createMCPClient, createMCPClientAndGetTools } from '../mcp';
+import { createChannelMemoryTools } from '../nodes/tools-node/channel-memory-tools';
 import { createFileProcessingTool } from '../nodes/tools-node/file-processing-tool';
 import { createListRoomFilesTool } from '../nodes/tools-node/list-room-files-tool';
 import {
   createListSkillsTool,
   createSearchSkillsTool,
 } from '../nodes/tools-node/skills-tools';
+import { createSetUserPreferencesTool } from '../nodes/tools-node/user-preferences-tool';
+import {
+  UserPreferencesService,
+  type UserPreferences,
+} from 'src/user-preferences/user-preferences.service';
 
 function buildOracleContext(oc: typeof oracleConfig): string {
   const lines: string[] = [];
@@ -119,6 +141,26 @@ function formatUserContext(data: unknown): string {
   return lines.length > 0 ? lines.join('\n') : '_No information available._';
 }
 
+/**
+ * Render the user's stored preferences as a markdown bullet list for injection
+ * into the system prompt. Returns an empty string when no prefs are set so the
+ * mustache `{{#USER_PREFERENCES_CONTEXT}}` block is omitted entirely.
+ */
+function formatUserPreferences(prefs?: UserPreferences): string {
+  if (!prefs) return '';
+
+  const lines: string[] = [];
+  if (prefs.agentName)
+    lines.push(`- **Preferred agent name:** ${prefs.agentName}`);
+  if (prefs.language) lines.push(`- **Preferred language:** ${prefs.language}`);
+  if (prefs.tone) lines.push(`- **Tone:** ${prefs.tone}`);
+  if (prefs.formality) lines.push(`- **Formality:** ${prefs.formality}`);
+  if (prefs.customInstructions)
+    lines.push(`- **Custom instructions:** ${prefs.customInstructions}`);
+
+  return lines.join('\n');
+}
+
 interface InvokeMainAgentParams {
   state: Partial<TMainAgentGraphState>;
   config: IRunnableConfigWithRequiredFields;
@@ -134,6 +176,57 @@ interface InvokeMainAgentParams {
 
 const configService = getConfig();
 const llm = getProviderChatModel('main', {});
+
+/**
+ * Mint a UCAN service invocation and return it as a header pair.
+ *
+ * Encapsulates the common pattern of:
+ *   1. calling `ucanService.createServiceInvocation`,
+ *   2. wrapping the resulting token in a single-key header object,
+ *   3. degrading silently on null / thrown errors.
+ *
+ * Returns `{}` (empty header set) on null result or thrown error so the
+ * caller can spread it unconditionally. When `bearer` is true, the token
+ * is prefixed with `Bearer ` to form a valid `Authorization` header value.
+ */
+async function mintInvocationHeader(args: {
+  ucanService: UcanService;
+  serviceUrl: string;
+  userDid: string;
+  resource: 'ixo:sandbox' | 'ixo:skills';
+  headerName: string;
+  bearer?: boolean;
+  successLogContext: string;
+  failureLogContext: string;
+}): Promise<Record<string, string>> {
+  const {
+    ucanService,
+    serviceUrl,
+    userDid,
+    resource,
+    headerName,
+    bearer = false,
+    successLogContext,
+    failureLogContext,
+  } = args;
+  try {
+    const invocation = await ucanService.createServiceInvocation(
+      serviceUrl,
+      userDid,
+      resource,
+    );
+    if (invocation) {
+      Logger.debug(successLogContext);
+      return { [headerName]: bearer ? `Bearer ${invocation}` : invocation };
+    }
+    return {};
+  } catch (err) {
+    const detail =
+      err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    Logger.warn(`${failureLogContext}: ${detail}`);
+    return {};
+  }
+}
 
 const oracleMatrixBaseUrl = configService
   .getOrThrow('MATRIX_BASE_URL')
@@ -194,11 +287,33 @@ Promise<ReactAgent<any>> => {
     `[createMainAgent] PageMemory auth ${pageMemoryAuth ? 'available' : 'unavailable (missing tokens or roomId)'}`,
   );
 
-  // Load secret index (cheap — one state query per message)
+  // Load secret index + user preferences in parallel (cheap — one state query each).
+  // Both are wrapped so a failure in either never blocks oracle startup.
   const roomId = configurable.configs?.matrix.roomId;
-  const secretIndex = roomId
-    ? await SecretsService.getInstance().getSecretIndex(roomId)
-    : [];
+  const [secretIndex, userPreferences] = await Promise.all<
+    [Promise<SecretIndexEntry[]>, Promise<UserPreferences | undefined>]
+  >([
+    roomId
+      ? SecretsService.getInstance()
+          .getSecretIndex(roomId)
+          .catch((err: unknown) => {
+            Logger.warn(
+              `[createMainAgent] Failed to load secret index: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            return [];
+          })
+      : Promise.resolve([]),
+    roomId
+      ? UserPreferencesService.getInstance()
+          .get(roomId)
+          .catch((err: unknown) => {
+            Logger.warn(
+              `[createMainAgent] Failed to load user preferences: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            return undefined;
+          })
+      : Promise.resolve(undefined),
+  ]);
 
   // Build base headers for sandbox MCP (auth only — secrets added lazily)
   // Try UCAN invocation first, fall back to Matrix OpenID tokens
@@ -212,23 +327,46 @@ Promise<ReactAgent<any>> => {
   let sandboxHeaders: Record<string, string> = matrixFallbackHeaders;
 
   if (ucanService?.hasSigningKey() && configurable.configs?.user?.did) {
-    try {
-      const invocation = await ucanService.createServiceInvocation(
-        configService.getOrThrow('SANDBOX_MCP_URL'),
-        configurable.configs.user.did,
-      );
-      if (invocation) {
-        sandboxHeaders = {
-          Authorization: `Bearer ${invocation}`,
-          'X-Auth-Type': 'ucan',
-        };
-        Logger.log('[UCAN] Using UCAN invocation for sandbox auth');
-      }
-    } catch (err) {
-      Logger.warn(
-        `[UCAN] Failed to create sandbox invocation, falling back to Matrix auth: ${err instanceof Error ? err.message : String(err)}`,
-      );
+    const sandboxAuthHeader = await mintInvocationHeader({
+      ucanService,
+      serviceUrl: configService.getOrThrow('SANDBOX_MCP_URL'),
+      userDid: configurable.configs.user.did,
+      resource: 'ixo:sandbox',
+      headerName: 'Authorization',
+      bearer: true,
+      successLogContext: '[UCAN] Using UCAN invocation for sandbox auth',
+      failureLogContext:
+        '[UCAN] Failed to create sandbox invocation, falling back to Matrix auth',
+    });
+    if (sandboxAuthHeader.Authorization) {
+      sandboxHeaders = {
+        ...sandboxAuthHeader,
+        'X-Auth-Type': 'ucan',
+      };
     }
+
+    // Always mint a parallel ai-skills invocation. Sandbox forwards this to the
+    // ai-skills service when tools (e.g. publish/delete capsules) need it.
+    // Mint unconditionally for every authenticated MCP call — the per-(user,service)
+    // cache inside createServiceInvocation makes repeat calls cheap. If minting
+    // fails (no signing key, no cached delegation, did:web unresolved), we just
+    // skip the header; sandbox tools that need it will surface a clean error.
+    // SKILLS_CAPSULES_BASE_URL has a default in the env Zod schema, so a plain
+    // get() is safe and avoids silently swallowing a misconfiguration throw.
+    const skillsHeader = await mintInvocationHeader({
+      ucanService,
+      serviceUrl:
+        configService.get('SKILLS_CAPSULES_BASE_URL') ??
+        'https://capsules.skills.ixo.earth',
+      userDid: configurable.configs.user.did,
+      resource: 'ixo:skills',
+      headerName: 'X-Skills-Invocation',
+      successLogContext:
+        '[UCAN] Attached X-Skills-Invocation header for sandbox',
+      failureLogContext:
+        '[UCAN] Failed to create skills invocation, omitting X-Skills-Invocation header',
+    });
+    sandboxHeaders = { ...sandboxHeaders, ...skillsHeader };
   }
 
   // Create sandbox MCP with auth headers (for tool schema discovery)
@@ -524,7 +662,10 @@ Promise<ReactAgent<any>> => {
   // sections are only populated when their services actually loaded.
   const systemPrompt = await AI_ASSISTANT_PROMPT.format({
     APP_NAME:
-      oracleConfig.oracleName || configService.get('ORACLE_NAME') || 'Oracle',
+      userPreferences?.agentName ??
+      oracleConfig.oracleName ??
+      configService.get('ORACLE_NAME') ??
+      'Oracle',
     ORACLE_CONTEXT: buildOracleContext(oracleConfig),
     IDENTITY_CONTEXT: formatUserContext(state?.userContext?.identity),
     WORK_CONTEXT: formatUserContext(state?.userContext?.work),
@@ -547,6 +688,7 @@ Promise<ReactAgent<any>> => {
       oracleRetrievalTools.length > 0 ? DATAVAULT_DOCUMENTATION : '',
     AG_UI_TOOLS_DOCUMENTATION:
       agActionTools.length > 0 ? AG_UI_TOOLS_DOCUMENTATION : '',
+    USER_PREFERENCES_CONTEXT: formatUserPreferences(userPreferences),
   });
 
   // Wrap sandbox_run for lazy secret injection (both oracle and user secrets).
@@ -622,21 +764,15 @@ Promise<ReactAgent<any>> => {
     });
   });
 
-  // Build the skills tools — they merge public registry results with the
-  // user's custom skills under /workspace/data/user-skills/. The factories
-  // need the wrapped sandbox_run tool to ls the folder, and the user DID
-  // to scope the per-user listing cache.
-  const skillsSandboxRunTool = wrappedSandboxTools.find(
-    (t) => t.name === 'sandbox_run',
-  );
-  const listSkillsTool = createListSkillsTool({
-    sandboxRunTool: skillsSandboxRunTool,
-    userDid,
-  });
-  const searchSkillsTool = createSearchSkillsTool({
-    sandboxRunTool: skillsSandboxRunTool,
-    userDid,
-  });
+  // Reuse the ixo:skills invocation already minted for sandbox forwarding.
+  // Listing/search tools forward this directly to ai-skills so the user's
+  // own private (published) skills surface alongside the public registry.
+  // Undefined when UCAN is unavailable — the listing tools degrade to
+  // public-only.
+  const skillsUcan: string | undefined = sandboxHeaders['X-Skills-Invocation'];
+
+  const listSkillsTool = createListSkillsTool({ skillsUcan });
+  const searchSkillsTool = createSearchSkillsTool({ skillsUcan });
 
   // Conditionally create BlockNote (editor) agent tool if editorRoomId is provided
   let blockNoteAgentSpec:
@@ -771,6 +907,31 @@ Promise<ReactAgent<any>> => {
     );
   }
 
+  // Group-chat awareness: when MessagesService detects a group room it
+  // attaches a pre-built context block to runnableConfig.configurable.
+  // The roomId itself already lives on configurable.configs.matrix.roomId
+  // (in `matrix?.roomId` above) — no need to duplicate.
+  const configurableExt = configurable as Record<string, unknown>;
+  const groupChatContext =
+    typeof configurableExt.groupChatContext === 'string'
+      ? configurableExt.groupChatContext
+      : undefined;
+  const isGroupRoom = Boolean(groupChatContext);
+
+  if (groupChatContext) {
+    finalSystemPrompt += `\n\n---\n\n## GROUP CHAT CONTEXT\n\n${groupChatContext}\n`;
+  }
+
+  const channelMemoryService = ChannelMemoryService.getInstance();
+  const channelMemoryTools =
+    isGroupRoom && matrix?.roomId && channelMemoryService
+      ? createChannelMemoryTools({
+          channelMemory: channelMemoryService,
+          roomId: matrix.roomId,
+          pinnedByDid: configurable.configs?.user?.did ?? '',
+        })
+      : [];
+
   // check db folder if not exists, create it
   const dbFolder = path.join(
     UserMatrixSqliteSyncService.checkpointsFolder,
@@ -785,7 +946,7 @@ Promise<ReactAgent<any>> => {
 
   const middleware = [
     createToolValidationMiddleware(),
-    toolRetryMiddleware(),
+    toolRetryMiddleware({ onFailure: (error) => error.message }),
     createPageContextMiddleware(),
   ];
 
@@ -793,9 +954,12 @@ Promise<ReactAgent<any>> => {
     middleware.push(createTokenLimiterMiddleware());
   }
 
+  // Priority: caller override → oracle.config model → default llm
   const effectiveModel = modelOverride
     ? getProviderChatModel('main', { model: modelOverride })
-    : llm;
+    : oracleConfig.model
+      ? getProviderChatModel('main', { model: oracleConfig.model })
+      : llm;
 
   const agent = createAgent({
     model: effectiveModel,
@@ -823,7 +987,13 @@ Promise<ReactAgent<any>> => {
             ),
           ]
         : []),
-      ...(matrix?.roomId ? [createListRoomFilesTool(matrix.roomId)] : []),
+      ...(matrix?.roomId
+        ? [
+            createListRoomFilesTool(matrix.roomId),
+            createSetUserPreferencesTool(matrix.roomId),
+          ]
+        : []),
+      ...channelMemoryTools,
       ...(applySandboxOutputToBlockTool ? [applySandboxOutputToBlockTool] : []),
       ...(standaloneEditorTool ? [standaloneEditorTool] : []),
     ],

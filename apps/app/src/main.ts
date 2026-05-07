@@ -18,7 +18,7 @@ import { EditorMatrixClient } from './graph/agents/editor/editor-mx';
 import { initModelPricingCache } from './graph/llm-provider';
 import { SecretsService } from './secrets/secrets.service';
 import { UserMatrixSqliteSyncService } from './user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
-import { UserSkillsService } from './user-skills/user-skills.service';
+import { UserPreferencesService } from './user-preferences/user-preferences.service';
 
 async function bootstrap(): Promise<void> {
   // await migrate();
@@ -109,7 +109,7 @@ async function bootstrap(): Promise<void> {
   // LangGraph agent code outside NestJS DI. Pass the cache manager here at bootstrap.
   const cache = app.get<Cache>(CACHE_MANAGER);
   SecretsService.getInstance().setCacheManager(cache);
-  UserSkillsService.getInstance().setCacheManager(cache);
+  UserPreferencesService.getInstance().setCacheManager(cache);
 
   // Load per-model pricing from provider APIs (non-blocking)
   initModelPricingCache().catch((err) =>

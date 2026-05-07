@@ -13,6 +13,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CallsModule } from './calls/calls.module';
+import { ChannelMemoryModule } from './channel-memory/channel-memory.module';
 import { type ENV, EnvSchema, getConfig, isRedisEnabled } from './config';
 import { DataVaultModule } from './data-vault';
 import { MessagesModule } from './messages/messages.module';
@@ -25,6 +26,7 @@ import { UcanModule } from './ucan/ucan.module';
 import { normalizeDid } from './utils/header.utils';
 import { RedisService } from './utils/redis.service';
 import { TasksModule } from './tasks/tasks.module';
+import { UserPreferencesModule } from './user-preferences/user-preferences.module';
 import { WsModule } from './ws/ws.module';
 
 @Module({
@@ -58,6 +60,7 @@ import { WsModule } from './ws/ws.module';
     ]),
     WsModule,
     // ChromaDbModule.forRoot(),
+    ChannelMemoryModule,
     SessionsModule,
     MessagesModule,
     UcanModule,
@@ -68,6 +71,7 @@ import { WsModule } from './ws/ws.module';
     SlackModule,
     CallsModule,
     DataVaultModule,
+    UserPreferencesModule,
   ],
   controllers: [AppController],
   providers: [

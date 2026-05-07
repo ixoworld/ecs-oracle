@@ -22,7 +22,7 @@ export const DATA_VAULT_CONSTANTS = {
   QUERY_TIMEOUT_MS: 30000,
 
   /** Maximum result rows for queries */
-  MAX_RESULT_ROWS: 10000,
+  MAX_RESULT_ROWS: 2000,
 
   /** Default TTL for vault entries in seconds (30 minutes) */
   DEFAULT_TTL_SECONDS: 30 * 60,
