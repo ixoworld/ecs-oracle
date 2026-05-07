@@ -75,8 +75,17 @@ export function deleteByPath(obj: Record<string, unknown>, path: string): void {
 }
 
 /**
- * Extract data at paths, returning the extracted data and modified response
- * @param response - Original MCP response
+ * Extract data at paths, returning the extracted data and modified response.
+ *
+ * **Mutates `response` in place** when neither root extraction nor
+ * `preservePaths` apply: the extracted paths are deleted from `response` and
+ * the same reference is returned as the modified response. This avoids
+ * cloning the entire object graph (which for MCP responses can be several
+ * MB) just to delete a few keys. The only caller (mcp-tool-wrapper.ts) does
+ * not need the original response after this call, so the in-place mutation
+ * is safe; if a future caller needs both, it should clone before calling.
+ *
+ * @param response - Original MCP response (mutated in place — see above)
  * @param extractionPaths - Paths to extract
  * @param preservePaths - Paths to keep inline
  * @returns Tuple of [extracted data map, modified response]
@@ -93,31 +102,29 @@ export function extractDataByPaths(
     return [extracted, response];
   }
 
-  // Clone response to avoid mutations
-  const modified = JSON.parse(JSON.stringify(response));
-
-  // Extract data at each path
+  // Extract data at each path; mutate `response` directly (see docstring).
   for (const path of extractionPaths) {
     const data = getByPath(response, path);
     if (data !== undefined) {
       extracted.set(path, data);
-      // Remove from modified response
       if (path === '' || path === '.') {
-        // Special case: extracting root level
-        // We'll replace with preserved paths only
+        // Special case: extracting root level — caller can't keep a reference
+        // to the root, so we have to materialise a new preserved object here.
         return [extracted, buildPreservedObject(response, preservePaths)];
-      } else {
-        deleteByPath(modified as Record<string, unknown>, path);
+      } else if (response && typeof response === 'object') {
+        deleteByPath(response as Record<string, unknown>, path);
       }
     }
   }
 
-  // If preserve paths specified, build new object with only those paths
+  // If preserve paths specified, build new object with only those paths.
+  // (Necessary because we can't represent "keep only these subtrees" via
+  // delete operations alone.)
   if (preservePaths.length > 0) {
     return [extracted, buildPreservedObject(response, preservePaths)];
   }
 
-  return [extracted, modified];
+  return [extracted, response];
 }
 
 /**
