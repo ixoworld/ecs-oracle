@@ -111,14 +111,14 @@ interface VaultEntry {
  * - Load → Query → Drop pattern for memory safety
  * - Access token validation for security
  * - Query timeout protection (30s)
- * - Result row limits (10k max)
+ * - Result row limits (2k max)
  */
 @Injectable()
 export class DataVaultQueryService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DataVaultQueryService.name);
   private readonly VAULT_PREFIX = 'data-vault:';
   private readonly QUERY_TIMEOUT_MS = 30000; // 30 seconds
-  private readonly MAX_RESULT_ROWS = 10000;
+  private readonly MAX_RESULT_ROWS = 2000;
 
   private redis: Redis;
   private instance: DuckDBInstance;
