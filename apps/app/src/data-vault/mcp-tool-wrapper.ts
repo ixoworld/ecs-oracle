@@ -59,13 +59,21 @@ function createWrappedTool(
       // Call original MCP tool
       const result = await originalTool.invoke(input, config);
 
-      // Calculate response size
-      const responseString =
-        typeof result === 'string' ? result : JSON.stringify(result);
-      const responseSizeKB = (
-        Buffer.byteLength(responseString, 'utf8') / 1024
-      ).toFixed(2);
-      const responseTokensEstimate = Math.ceil(responseString.length / 4);
+      // Calculate response size. Scoped in an IIFE so the temporary stringified
+      // copy (only used for byte/length sampling when `result` is an object)
+      // becomes unreachable as soon as we exit, letting V8 reclaim it before
+      // the heavier object-graph processing below — the previous shape kept
+      // that ~MB-scale string alive for the whole closure.
+      const { responseSizeKB, responseTokensEstimate } = (() => {
+        const sample =
+          typeof result === 'string' ? result : JSON.stringify(result);
+        return {
+          responseSizeKB: (
+            Buffer.byteLength(sample, 'utf8') / 1024
+          ).toFixed(2),
+          responseTokensEstimate: Math.ceil(sample.length / 4),
+        };
+      })();
 
       logger.log(
         `Response: ${responseSizeKB}KB (~${responseTokensEstimate} tokens)`,
