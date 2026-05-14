@@ -3,17 +3,68 @@ import { Logger } from '@nestjs/common';
 import { type AgentMiddleware, createMiddleware } from 'langchain';
 import z from 'zod';
 
+/**
+ * In-memory cache for room title lookups.
+ *
+ * Without this, every wrapModelCall hop re-issues a Matrix state-event GET
+ * for the same room — and when the bot isn't a member (the common case
+ * for editor rooms it doesn't own) every call burns ~350-400ms returning
+ * M_FORBIDDEN. Over a 5-hop tool sequence that's ~2s of pure waste per
+ * turn. Caching the resolved title (or the fact that we couldn't get one)
+ * eliminates that overhead.
+ *
+ * TTLs are intentionally short — room names can change and the bot can be
+ * invited/uninvited mid-session — but long enough to amortise a single
+ * agent turn cleanly.
+ */
+const SUCCESS_TTL_MS = 60_000; // titles rarely change
+const FAILURE_TTL_MS = 120_000; // not-in-room is usually persistent
+
+const titleCache = new Map<string, { title: string | undefined; expiresAt: number }>();
+
+function readCache(roomId: string): { title: string | undefined } | undefined {
+  const hit = titleCache.get(roomId);
+  if (!hit) return undefined;
+  if (hit.expiresAt < Date.now()) {
+    titleCache.delete(roomId);
+    return undefined;
+  }
+  return { title: hit.title };
+}
+
+function writeCache(roomId: string, title: string | undefined, ok: boolean): void {
+  titleCache.set(roomId, {
+    title,
+    expiresAt: Date.now() + (ok ? SUCCESS_TTL_MS : FAILURE_TTL_MS),
+  });
+}
+
 async function resolvePageTitle(roomId: string): Promise<string | undefined> {
+  const cached = readCache(roomId);
+  if (cached) return cached.title;
+
+  const t0 = Date.now();
   try {
     const client = MatrixManager.getInstance().getClient();
-    if (!client) return undefined;
+    if (!client) return undefined; // no client → don't cache, transient
     const ev = await client.mxClient.getRoomStateEvent(
       roomId,
       'm.room.name',
       '',
     );
-    return (ev as { name?: string })?.name ?? undefined;
-  } catch {
+    const title = (ev as { name?: string })?.name ?? undefined;
+    writeCache(roomId, title, true);
+    Logger.log(
+      `[debug] resolvePageTitle ok room=${roomId} duration=${Date.now() - t0}ms (cached for ${SUCCESS_TTL_MS / 1000}s)`,
+      'PageContextMiddleware',
+    );
+    return title;
+  } catch (err) {
+    writeCache(roomId, undefined, false);
+    Logger.warn(
+      `[debug] resolvePageTitle failed room=${roomId} duration=${Date.now() - t0}ms err=${err instanceof Error ? err.message : String(err)} (cached as unresolved for ${FAILURE_TTL_MS / 1000}s)`,
+      'PageContextMiddleware',
+    );
     return undefined;
   }
 }
