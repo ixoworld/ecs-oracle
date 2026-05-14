@@ -15,7 +15,6 @@ import { AppService } from './app.service';
 import { CallsModule } from './calls/calls.module';
 import { ChannelMemoryModule } from './channel-memory/channel-memory.module';
 import { type ENV, EnvSchema, getConfig, isRedisEnabled } from './config';
-import { DataVaultModule } from './data-vault';
 import { MessagesModule } from './messages/messages.module';
 import { AuthHeaderMiddleware } from './middleware/auth-header.middleware';
 import { SubscriptionMiddleware } from './middleware/subscription.middleware';
@@ -70,7 +69,6 @@ import { WsModule } from './ws/ws.module';
     ScheduleModule.forRoot(),
     SlackModule,
     CallsModule,
-    DataVaultModule,
     UserPreferencesModule,
   ],
   controllers: [AppController],
@@ -135,8 +133,6 @@ export class AppModule implements NestModule {
           { path: '/health', method: RequestMethod.ALL },
           { path: '/docs', method: RequestMethod.ALL },
           { path: '/docs/(.*)', method: RequestMethod.ALL },
-          // Data vault has its own auth (x-user-did + x-data-token)
-          { path: '/data-vault/(.*)', method: RequestMethod.ALL },
         )
         .forRoutes('*');
     } else {
@@ -147,8 +143,6 @@ export class AppModule implements NestModule {
           { path: '/health', method: RequestMethod.ALL },
           { path: '/docs', method: RequestMethod.ALL },
           { path: '/docs/(.*)', method: RequestMethod.ALL },
-          // Data vault has its own auth (x-user-did + x-data-token)
-          { path: '/data-vault/(.*)', method: RequestMethod.ALL },
         )
         .forRoutes('*');
     }

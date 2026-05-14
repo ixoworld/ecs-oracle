@@ -18,9 +18,10 @@ import { createToolValidationMiddleware } from '../middlewares/tool-validation-m
 import {
   AG_UI_TOOLS_DOCUMENTATION,
   AI_ASSISTANT_PROMPT,
-  DATAVAULT_DOCUMENTATION,
+  ECS_ORACLE_SKILL_DOCUMENTATION,
   SLACK_FORMATTING_CONSTRAINTS_CONTENT,
 } from '../nodes/chat-node/prompt';
+import { isEcsAuthorized } from '../utils/ecs-access';
 import { type TMainAgentGraphState } from '../state';
 import { contextSchema } from '../types';
 import { createAguiAgent } from './agui-agent';
@@ -46,12 +47,6 @@ import { DynamicStructuredTool } from 'langchain';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  createOracleRetrievalTools,
-  getDataAnalysisInstance,
-  getDataVaultInstance,
-  getDataVaultQueryInstance,
-} from 'src/data-vault';
-import {
   type FileProcessingService,
   type SandboxUploadConfig,
 } from 'src/messages/file-processing.service';
@@ -64,6 +59,21 @@ import { type TasksService } from 'src/tasks/task.service';
 import { UserMatrixSqliteSyncService } from 'src/user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
 import z from 'zod';
 import oracleConfigRaw from '../../../oracle.config.json';
+
+/**
+ * Browser tools the front-end may still register (in `lib/storage/browser-tools.ts`)
+ * but which the oracle no longer exposes to the LLM. These IndexedDB-cache
+ * lookup tools were left half-wired through several iterations of the data
+ * pipeline; they're being parked until we redesign the FE-cache reuse path
+ * around the new R2-presigned-URL flow. Filtering at this edge keeps the
+ * agent from seeing them and avoids the timeout-retry loop the LLM falls
+ * into when an unsupported tool sits in the prompt.
+ */
+const DISABLED_BROWSER_TOOLS: ReadonlySet<string> = new Set([
+  'list_local_datasets',
+  'get_dataset_details',
+  'query_local_dataset',
+]);
 
 // Normalize optional fields: convert empty strings to undefined so downstream
 // truthiness checks (`if (oracleConfig.model)`) are unambiguous.
@@ -78,7 +88,7 @@ const oracleConfig = {
 };
 import { ChannelMemoryService } from '../../channel-memory/channel-memory.service';
 import { getProviderChatModel } from '../llm-provider';
-import { createMCPClient, createMCPClientAndGetTools } from '../mcp';
+import { createMCPClient } from '../mcp';
 import { createChannelMemoryTools } from '../nodes/tools-node/channel-memory-tools';
 import { createFileProcessingTool } from '../nodes/tools-node/file-processing-tool';
 import { createListRoomFilesTool } from '../nodes/tools-node/list-room-files-tool';
@@ -466,15 +476,12 @@ Promise<ReactAgent<any>> => {
       ? state.agActions.map((action) => parserActionTool(action))
       : [];
 
-  // Get DataVault instance for large data offloading
-  const dataVault = getDataVaultInstance();
-  const dataAnalysis = getDataAnalysisInstance();
-  const dataVaultQuery = getDataVaultQueryInstance();
-
-  // Create oracle retrieval tools for accessing vaulted data
-  const oracleRetrievalTools = dataVaultQuery
-    ? createOracleRetrievalTools(dataVaultQuery, configurable.configs.user.did)
-    : [];
+  // ECS data access is gated by user DID. When authorized we describe the
+  // ecs-oracle skill in the prompt AND inject ECS secrets as x-os-* headers
+  // when calling sandbox_run. When not authorized neither happens — so even
+  // an explicit "use ecs-oracle" request from the user fails fast with
+  // MISSING_SECRET inside the skill.
+  const ecsAuthorized = isEcsAuthorized(configurable.configs.user.did);
 
   // Build AG-UI sub-agent when actions are available
   const aguiAgentSpec =
@@ -485,18 +492,6 @@ Promise<ReactAgent<any>> => {
           sessionId: configurable.thread_id,
         })
       : null;
-
-  const dataVaultContext = {
-    userDid: configurable.configs?.user.did ?? '',
-    sessionId: configurable.thread_id ?? '',
-    dataVault: dataVault ?? undefined,
-    dataAnalysis: dataAnalysis ?? undefined,
-  };
-
-  const getMcpTools = async () => {
-    // UCAN-for-MCP disabled for now; DataVault wrapping still applied via context.
-    return createMCPClientAndGetTools(dataVaultContext);
-  };
 
   // Build operational mode + editor section via JS — cleaner than nested mustache conditionals
   const editorPrompts = state.editorRoomId
@@ -589,19 +584,20 @@ Promise<ReactAgent<any>> => {
     memoryResult,
     firecrawlResult,
     domainIndexerResult,
-    mcpToolsResult,
     sandboxResult,
     taskManagerResult,
   ] = await Promise.allSettled([
     createPortalAgent({
       tools:
-        state.browserTools?.map((tool) =>
-          parserBrowserTool({
-            description: tool.description,
-            schema: tool.schema,
-            toolName: tool.name,
-          }),
-        ) ?? [],
+        state.browserTools
+          ?.filter((tool) => !DISABLED_BROWSER_TOOLS.has(tool.name))
+          .map((tool) =>
+            parserBrowserTool({
+              description: tool.description,
+              schema: tool.schema,
+              toolName: tool.name,
+            }),
+          ) ?? [],
       userDid: configurable.configs.user.did,
       sessionId: configurable.thread_id,
     }),
@@ -619,7 +615,6 @@ Promise<ReactAgent<any>> => {
       userDid: configurable.configs.user.did,
       sessionId: configurable.thread_id,
     }),
-    getMcpTools(),
     sandboxMCP?.getTools() ?? Promise.resolve([]),
     matrix?.roomId && tasksService && userMatrixId
       ? createTaskManagerAgent({
@@ -650,7 +645,6 @@ Promise<ReactAgent<any>> => {
     null,
     'Domain Indexer Agent',
   );
-  const mcpTools = settled(mcpToolsResult, [], 'MCP tools');
   const sandboxTools = settled(sandboxResult, [], 'Sandbox MCP');
   const taskManagerAgent = settled(
     taskManagerResult,
@@ -684,8 +678,9 @@ Promise<ReactAgent<any>> => {
         ? secretIndex.map((s) => `- _USER_SECRET_${s.name}`).join('\n')
         : '',
     COMPOSIO_CONTEXT: '',
-    DATAVAULT_DOCUMENTATION:
-      oracleRetrievalTools.length > 0 ? DATAVAULT_DOCUMENTATION : '',
+    ECS_ORACLE_SKILL_DOCUMENTATION: ecsAuthorized
+      ? ECS_ORACLE_SKILL_DOCUMENTATION
+      : '',
     AG_UI_TOOLS_DOCUMENTATION:
       agActionTools.length > 0 ? AG_UI_TOOLS_DOCUMENTATION : '',
     USER_PREFERENCES_CONTEXT: formatUserPreferences(userPreferences),
@@ -722,6 +717,19 @@ Promise<ReactAgent<any>> => {
                     enrichedHeaders[`x-os-${key.toLowerCase()}`] = val;
                 }
               }
+            }
+
+            // ECS data secrets — gated by the same DID whitelist used to
+            // decide whether to show the ecs-oracle skill in the prompt.
+            // Without these, fetch.mjs inside the sandbox exits with
+            // MISSING_SECRET so non-authorized users can't reach ECS even
+            // if they try to invoke the skill explicitly.
+            if (ecsAuthorized) {
+              const ecsMcpUrl = configService.get('ECS_MCP_URL');
+              const ecsAuthToken = configService.get('ECS_MCP_AUTH_TOKEN');
+              if (ecsMcpUrl) enrichedHeaders['x-os-ecs_mcp_url'] = ecsMcpUrl;
+              if (ecsAuthToken)
+                enrichedHeaders['x-os-ecs_mcp_auth_token'] = ecsAuthToken;
             }
 
             // Add user secrets as x-us-* headers
@@ -966,10 +974,8 @@ Promise<ReactAgent<any>> => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     contextSchema: contextSchema as any,
     tools: [
-      ...mcpTools,
       ...wrappedSandboxTools,
       ...(callAguiAgentTool ? [callAguiAgentTool] : []),
-      ...oracleRetrievalTools,
       listSkillsTool,
       searchSkillsTool,
       ...(callPortalAgentTool ? [callPortalAgentTool] : []),
