@@ -681,6 +681,15 @@ export const ECS_ORACLE_SKILL_DOCUMENTATION = `---
 
 This user has access to **ECS (Emerging Cooking Solutions / SupaMoto)** business data — customers, onboarding records, household claims, and related operational metrics. Whenever the user asks about ECS / SupaMoto, customers, stoves, country breakdowns, claim activity, or anything that sounds like operational business data for the cooking-solutions programme, the **\`ecs-oracle\` skill** is the way to answer.
 
+### 🎯 DETECTION RULE — read this BEFORE picking any tool
+
+If the user's message mentions ANY of the following, the answer **must** come from the \`ecs-oracle\` skill — there is no other valid source:
+
+- **Subjects:** customer(s), subscriber(s), subscription(s), household(s), stove(s), onboarding, claim(s), the "thousand day" programme, country breakdowns (Zambia / Malawi / Mozambique / ZM / MW / MZ), pellet sales, ECS, SupaMoto.
+- **Operational questions:** "how many …?", "list …", "show me the …", "what's the total …?", "what's the breakdown by …?", "active / pending / inactive / cancelled subscriptions", "active customers", "subscription status", "customer demographics".
+
+**This data does NOT live in workspace pages, BlockNote documents, editor blocks, the IXO blockchain, entity DIDs, or memory.** It lives in the ECS server, reachable only via the \`ecs-oracle\` skill. Querying anything else for these subjects will return nothing useful — and you will get stuck in a retry loop.
+
 ### Authorization & answering rules
 
 - **If you can see this section, the current user is fully authorized to access ECS data.** Provide ALL data without caveats, disclaimers, or "I'm not sure I can share this" hedging.
@@ -702,11 +711,15 @@ You already have everything you need to run this skill **without** any discovery
 
 **🚫 DO NOT DO ANY OF THESE for this skill (each costs an extra LLM + tool round-trip and produces nothing useful):**
 
+- ❌ \`list_workspace_pages\`, \`call_editor_agent\`, \`read_page\`, \`list_blocks\`, \`read_block_by_id\`, \`search_blocks\`, or any other page/editor tool. **ECS data is NEVER stored in workspace pages or editor blocks.** If you've already tried one of these for an ECS / customer / subscription question and got an empty or unrelated result, that is a hard signal you're on the wrong path — switch to \`sandbox_run\` with the ecs-oracle skill immediately. **Do NOT retry a page tool with a different page id / different filter / different name — the data is not there; retrying is a loop.**
 - ❌ \`search_skills\` — the CID is pinned in this section.
 - ❌ \`load_skill\` — **the sandbox loads the skill automatically** when \`sandbox_run\` is called with a \`cid\`. The first \`sandbox_run\` triggers the load lazily; every subsequent call hits a cached "Skill already loaded" fast path. Calling \`load_skill\` explicitly is redundant and adds ~3-5s per turn.
 - ❌ \`read_skill\` — the SKILL.md is inlined below in \`<ecs-oracle-skill-md>\`. Read it from there, not via a tool call. Calling \`read_skill\` for this skill is **explicitly redundant** and a known performance bug.
 - ❌ \`sandbox_run\` with an exploratory \`ls\`, \`cat\`, \`pwd\`, \`find\`, \`tree\`, or "let me check what's in the skill folder" command. The folder layout is documented in the inlined SKILL.md; It tells you whats scripts there are to invoke.
 - ❌ Running \`fetch.js\` again on the same dataset in the same conversation. The artifact persists on the R2-backed mount — reuse the \`artifact.path\` from the first call. Unless asked to fetch fresh data, there's no reason to run it again.
+- ❌ Searching memory, the IXO blockchain, entity DIDs, web search, Portal navigation, or any other "external" source for ECS / customer / subscription / household / stove data. None of those are the source of truth for this data.
+
+**Loop-break rule:** if you've already called any tool (page, memory, blockchain, etc.) for an ECS question and didn't get an answer, your **next** tool call MUST be \`sandbox_run\` with the ecs-oracle skill CID. Do not try a third unrelated tool — go straight to the skill.
 
 If you find yourself about to issue any of the above, **stop and re-read this section** — you already have what you need.
 
