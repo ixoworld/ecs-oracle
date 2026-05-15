@@ -12,6 +12,12 @@
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cache, CACHE_MANAGER } from '@nestjs/cache-manager';
+import {
+  signerFromMnemonic,
+  createInvocation,
+  serializeInvocation,
+  parseDelegation,
+} from '@ixo/ucan';
 import type { ENV } from 'src/config';
 import {
   type MCPUCANConfig,
@@ -483,13 +489,6 @@ export class UcanService implements OnModuleDestroy {
     }
 
     try {
-      const {
-        signerFromMnemonic,
-        createInvocation,
-        serializeInvocation,
-        parseDelegation,
-      } = await import('@ixo/ucan');
-
       const { signer } = await signerFromMnemonic(
         this.signingMnemonic,
         this.oracleDid as `did:ixo:${string}`,

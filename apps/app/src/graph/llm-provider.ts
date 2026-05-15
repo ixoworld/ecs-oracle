@@ -34,12 +34,14 @@ export type ModelRole =
 
 const MODEL_MAP: Record<LLMProvider, Record<ModelRole, string>> = {
   openrouter: {
-    main: 'deepseek/deepseek-v4-flash',
+    main: 'qwen/qwen3.5-flash-02-23',
+    // main: 'google/gemini-3.1-flash-lite',
+    // main: 'deepseek/deepseek-v4-flash',
     // main: 'moonshotai/kimi-k2.6',
     // main: 'moonshotai/kimi-k2-thinking',
-    skills: 'deepseek/deepseek-v4-flash',
+    skills: 'qwen/qwen3.5-flash-02-23',
     // skills: 'moonshotai/kimi-k2-thinking',
-    subagent: 'deepseek/deepseek-v4-flash',
+    subagent: 'qwen/qwen3.5-flash-02-23',
     // subagent: 'moonshotai/kimi-k2-thinking',
     vision: 'google/gemini-2.5-flash-lite',
     guard: 'meta-llama/llama-3.1-8b-instruct',
@@ -118,7 +120,7 @@ export const getProviderChatModel = (
         ...params?.modelKwargs,
       },
       reasoning: {
-        effort: 'medium',
+        effort: 'low',
         ...params?.reasoning,
       },
     });

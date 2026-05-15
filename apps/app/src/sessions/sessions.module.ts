@@ -1,8 +1,7 @@
 import { MemoryEngineService, SessionManagerService } from '@ixo/common';
 import { MatrixManager } from '@ixo/matrix';
 import { Module } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { type ENV } from 'src/types';
+import { NoopMemoryEngineService } from '../memory-engine/noop-memory-engine.service';
 import { MessagesModule } from '../messages/messages.module';
 import { UcanModule } from '../ucan/ucan.module';
 import { CheckpointStorageSyncModule } from '../user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.module';
@@ -19,26 +18,18 @@ import { SessionsService } from './sessions.service';
     SessionHistoryProcessor,
     {
       provide: MemoryEngineService,
-      useFactory: (configService: ConfigService<ENV>) => {
-        const memoryEngineUrl =
-          configService.getOrThrow<string>('MEMORY_ENGINE_URL');
-        return new MemoryEngineService(memoryEngineUrl);
-      },
-      inject: [ConfigService],
+      useFactory: () => new NoopMemoryEngineService(),
     },
     {
       provide: SessionManagerService,
-      useFactory: (
-        syncService: UserMatrixSqliteSyncService,
-        memoryEngineService: MemoryEngineService,
-      ) => {
+      useFactory: (syncService: UserMatrixSqliteSyncService) => {
         return new SessionManagerService(
           syncService,
           MatrixManager.getInstance(),
-          memoryEngineService,
+          undefined,
         );
       },
-      inject: [UserMatrixSqliteSyncService, MemoryEngineService],
+      inject: [UserMatrixSqliteSyncService],
     },
   ],
   exports: [SessionsService, SessionHistoryProcessor],

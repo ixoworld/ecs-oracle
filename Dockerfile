@@ -10,7 +10,7 @@ RUN apt-get update \
 # Setup pnpm and turbo on the debian base
 FROM --platform=linux/amd64 debian-base as base
 ENV CI=true
-RUN npm install pnpm@10.0.0 turbo --global
+RUN npm install pnpm@10.23.0 turbo --global
 RUN pnpm config set store-dir ~/.pnpm-store
 
 # Prune projects
@@ -41,6 +41,13 @@ COPY --from=pruner /app/out/full/ .
 RUN turbo build --filter=${PROJECT}
 # Remove dev dependencies and hoist production dependencies to top level for proper module resolution
 RUN --mount=type=cache,id=pnpm,target=~/.pnpm-store pnpm install --frozen-lockfile --prod --shamefully-hoist
+# Fail loudly if the native matrix-sdk-crypto binary wasn't dropped by its
+# postinstall. Otherwise the pod boots, then crashes on first Matrix call
+# with "Cannot find module '@ixo/matrix-sdk-crypto-nodejs-linux-x64-gnu'" —
+# a failure mode that's much more painful to diagnose at deploy time than
+# at build time.
+RUN ls node_modules/.pnpm/@ixo+matrix-sdk-crypto-nodejs@*/node_modules/@ixo/matrix-sdk-crypto-nodejs/matrix-sdk-crypto.linux-x64-gnu.node \
+  || (echo "ERROR: matrix-sdk-crypto native binary missing — postinstall didn't run. Check pnpm version supports onlyBuiltDependencies for transitive deps." && exit 1)
 # Remove source files only from workspace packages, not from node_modules
 RUN rm -rf ./packages/*/src ./apps/*/src
 

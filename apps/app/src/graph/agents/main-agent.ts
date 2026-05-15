@@ -25,7 +25,6 @@ import { isEcsAuthorized } from '../utils/ecs-access';
 import { type TMainAgentGraphState } from '../state';
 import { contextSchema } from '../types';
 import { createAguiAgent } from './agui-agent';
-import { createDomainIndexerAgent } from './domain-indexer-agent';
 import { createApplySandboxOutputToBlockTool } from './editor/apply-sandbox-output-to-block';
 import { createEditorAgent } from './editor/editor-agent';
 import {
@@ -37,11 +36,8 @@ import {
   STANDALONE_EDITOR_PROMPTS,
 } from './editor/prompts';
 import { createStandaloneEditorTool } from './editor/standalone-editor-tool';
-import { createFirecrawlAgent } from './firecrawl-agent';
-import { createMemoryAgent } from './memory-agent';
 import { createPortalAgent } from './portal-agent';
 import { createSubagentAsTool, type AgentSpec } from './subagent-as-tool';
-import { createTaskManagerAgent } from './task-manager';
 
 import { DynamicStructuredTool } from 'langchain';
 import fs from 'node:fs';
@@ -54,11 +50,11 @@ import {
   SecretsService,
   type SecretIndexEntry,
 } from 'src/secrets/secrets.service';
-import type { TaskExecutionContext } from 'src/tasks/processors/processor-utils';
-import { type TasksService } from 'src/tasks/task.service';
 import { UserMatrixSqliteSyncService } from 'src/user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
 import z from 'zod';
 import oracleConfigRaw from '../../../oracle.config.json';
+import { yieldToEventLoop } from '../../utils/event-loop';
+import { timedCheckpointer } from '../../utils/timed-checkpointer';
 
 /**
  * Browser tools the front-end may still register (in `lib/storage/browser-tools.ts`)
@@ -112,46 +108,6 @@ function buildOracleContext(oc: typeof oracleConfig): string {
 }
 
 /**
- * Convert a memory engine SearchEnhancedResponse into clean markdown.
- * Extracts only the meaningful content (facts + entity names) and drops
- * internal metadata (strategy_used, query, UUIDs, total_results).
- *
- * Accepts unknown to avoid coupling to the SearchEnhancedResponse type
- * while safely extracting the fields that exist at runtime.
- */
-function formatUserContext(data: unknown): string {
-  if (!data || typeof data !== 'object') return '_No information available._';
-
-  const obj = data as Record<string, unknown>;
-  if (Object.keys(obj).length === 0) return '_No information available._';
-
-  const lines: string[] = [];
-
-  // Extract facts — array of { fact: string, ... }
-  const facts = Array.isArray(obj.facts) ? obj.facts : [];
-  for (const f of facts) {
-    const fact =
-      typeof f === 'object' && f !== null && 'fact' in f
-        ? String(f.fact)
-        : null;
-    if (fact) lines.push(`- ${fact}`);
-  }
-
-  // Extract entity names — array of { name: string, ... }
-  const entities = Array.isArray(obj.entities) ? obj.entities : [];
-  const names = entities
-    .map((e) =>
-      typeof e === 'object' && e !== null && 'name' in e
-        ? String(e.name)
-        : null,
-    )
-    .filter(Boolean);
-  if (names.length > 0) lines.push(`- **Related:** ${names.join(', ')}`);
-
-  return lines.length > 0 ? lines.join('\n') : '_No information available._';
-}
-
-/**
  * Render the user's stored preferences as a markdown bullet list for injection
  * into the system prompt. Returns an empty string when no prefs are set so the
  * mustache `{{#USER_PREFERENCES_CONTEXT}}` block is omitted entirely.
@@ -180,8 +136,12 @@ interface InvokeMainAgentParams {
   fileProcessingService?: FileProcessingService;
   /** Optional model override — a provider model ID (e.g. from getModelForRole). When set, overrides the default 'main' model. */
   modelOverride?: string;
-  /** Optional TasksService for the Task Manager sub-agent */
-  tasksService?: TasksService;
+  /**
+   * Accepted but ignored — `streamMessage`/`sendMessage` still pass this
+   * for source compatibility, but the Task Manager sub-agent has been
+   * removed from the agent path.
+   */
+  tasksService?: unknown;
 }
 
 const configService = getConfig();
@@ -256,8 +216,7 @@ export const createMainAgent = async ({
   ucanService,
   fileProcessingService,
   modelOverride,
-  tasksService,
-}: InvokeMainAgentParams): // eslint-disable-next-line @typescript-eslint/no-explicit-any
+}: InvokeMainAgentParams):// eslint-disable-next-line @typescript-eslint/no-explicit-any
 Promise<ReactAgent<any>> => {
   const msgFromMatrixRoom = Boolean(
     state.messages?.at(-1)?.additional_kwargs.msgFromMatrixRoom,
@@ -326,56 +285,76 @@ Promise<ReactAgent<any>> => {
   ]);
 
   // Build base headers for sandbox MCP (auth only — secrets added lazily)
-  // Try UCAN invocation first, fall back to Matrix OpenID tokens
+  // Try UCAN invocation first, fall back to Matrix OpenID tokens.
+  //
+  // `sandboxType: standard` routes every sandbox MCP call from this oracle
+  // to the `SandboxStandard` Durable Object binding (instance_type:
+  // standard-1, keepAlive: true) instead of the default `lite` (1/16 vCPU,
+  // 5-min auto-sleep). Lite was throttling CPU-bound work in the
+  // ecs-oracle skill — JSON.parse / gzip / DuckDB scan were running
+  // ~10-20× slower than locally, which is most of the per-turn latency we
+  // saw. ECS oracle traffic is always data-heavy (fetch.js + query.js),
+  // so pinning the whole oracle to standard is the cheapest fix. If
+  // future skills need lite (e.g. for cost reasons on cheap one-shot
+  // work), we can extend the sandbox MCP to accept a per-call
+  // `sandboxType` param.
   const matrixFallbackHeaders: Record<string, string> = {
     Authorization: `Bearer ${configurable.configs?.user.matrixOpenIdToken}`,
     'x-matrix-homeserver': configurable.configs?.matrix.homeServerName ?? '',
     'X-oracle-openid-token': oracleOpenIdToken ?? '',
     'x-oracle-homeserver': oracleMatrixBaseUrl.replace(/^https?:\/\//, ''),
+    sandboxType: 'standard',
   };
 
   let sandboxHeaders: Record<string, string> = matrixFallbackHeaders;
 
   if (ucanService?.hasSigningKey() && configurable.configs?.user?.did) {
-    const sandboxAuthHeader = await mintInvocationHeader({
-      ucanService,
-      serviceUrl: configService.getOrThrow('SANDBOX_MCP_URL'),
-      userDid: configurable.configs.user.did,
-      resource: 'ixo:sandbox',
-      headerName: 'Authorization',
-      bearer: true,
-      successLogContext: '[UCAN] Using UCAN invocation for sandbox auth',
-      failureLogContext:
-        '[UCAN] Failed to create sandbox invocation, falling back to Matrix auth',
-    });
+    // Mint sandbox + skills invocations in parallel — they're independent
+    // and on a cold UCAN cache each is ~150-300 ms of sync crypto, so doing
+    // them serially adds 300-600 ms to the request hot path. The per-
+    // (user, service) cache inside createServiceInvocation makes warm
+    // calls instant; the parallelism only helps on cold misses but costs
+    // nothing on hits.
+    //
+    // SKILLS_CAPSULES_BASE_URL has a default in the env Zod schema, so
+    // `configService.get(...)` is safe.
+    const [sandboxAuthHeader, skillsHeader] = await Promise.all([
+      mintInvocationHeader({
+        ucanService,
+        serviceUrl: configService.getOrThrow('SANDBOX_MCP_URL'),
+        userDid: configurable.configs.user.did,
+        resource: 'ixo:sandbox',
+        headerName: 'Authorization',
+        bearer: true,
+        successLogContext: '[UCAN] Using UCAN invocation for sandbox auth',
+        failureLogContext:
+          '[UCAN] Failed to create sandbox invocation, falling back to Matrix auth',
+      }),
+      mintInvocationHeader({
+        ucanService,
+        serviceUrl:
+          configService.get('SKILLS_CAPSULES_BASE_URL') ??
+          'https://capsules.skills.ixo.earth',
+        userDid: configurable.configs.user.did,
+        resource: 'ixo:skills',
+        headerName: 'X-Skills-Invocation',
+        successLogContext:
+          '[UCAN] Attached X-Skills-Invocation header for sandbox',
+        failureLogContext:
+          '[UCAN] Failed to create skills invocation, omitting X-Skills-Invocation header',
+      }),
+    ]);
+
     if (sandboxAuthHeader.Authorization) {
+      // Keep `sandboxType` and any other non-auth headers from
+      // matrixFallbackHeaders — swapping in the UCAN Authorization should
+      // not drop the sandbox-tier routing header.
       sandboxHeaders = {
+        sandboxType: matrixFallbackHeaders.sandboxType,
         ...sandboxAuthHeader,
         'X-Auth-Type': 'ucan',
       };
     }
-
-    // Always mint a parallel ai-skills invocation. Sandbox forwards this to the
-    // ai-skills service when tools (e.g. publish/delete capsules) need it.
-    // Mint unconditionally for every authenticated MCP call — the per-(user,service)
-    // cache inside createServiceInvocation makes repeat calls cheap. If minting
-    // fails (no signing key, no cached delegation, did:web unresolved), we just
-    // skip the header; sandbox tools that need it will surface a clean error.
-    // SKILLS_CAPSULES_BASE_URL has a default in the env Zod schema, so a plain
-    // get() is safe and avoids silently swallowing a misconfiguration throw.
-    const skillsHeader = await mintInvocationHeader({
-      ucanService,
-      serviceUrl:
-        configService.get('SKILLS_CAPSULES_BASE_URL') ??
-        'https://capsules.skills.ixo.earth',
-      userDid: configurable.configs.user.did,
-      resource: 'ixo:skills',
-      headerName: 'X-Skills-Invocation',
-      successLogContext:
-        '[UCAN] Attached X-Skills-Invocation header for sandbox',
-      failureLogContext:
-        '[UCAN] Failed to create skills invocation, omitting X-Skills-Invocation header',
-    });
     sandboxHeaders = { ...sandboxHeaders, ...skillsHeader };
   }
 
@@ -398,48 +377,13 @@ Promise<ReactAgent<any>> => {
     : undefined;
 
   // Build memory engine headers — UCAN first, Matrix fallback
-  const memoryMatrixFallbackHeaders: Record<string, string> = {
-    'x-oracle-token': oracleOpenIdToken ?? '',
-    'x-user-token': configurable.configs?.user.matrixOpenIdToken ?? '',
-    'x-oracle-matrix-homeserver': oracleMatrixBaseUrl.replace(
-      /^https?:\/\//,
-      '',
-    ),
-    'x-user-matrix-homeserver':
-      configurable.configs?.matrix.homeServerName ?? '',
-    'x-room-id': matrix?.roomId ?? '',
-    'User-Agent': 'LangChain-MCP-Client/1.0',
-  };
-
-  let memoryHeaders: Record<string, string> = memoryMatrixFallbackHeaders;
-
-  if (ucanService?.hasSigningKey() && configurable.configs?.user?.did) {
-    try {
-      const memoryInvocation = await ucanService.createServiceInvocation(
-        configService.getOrThrow('MEMORY_MCP_URL'),
-        configurable.configs.user.did,
-        'ixo:memory',
-      );
-      if (memoryInvocation) {
-        memoryHeaders = {
-          Authorization: `Bearer ${memoryInvocation}`,
-          'X-Auth-Type': 'ucan',
-          'x-room-id': matrix?.roomId ?? '',
-          'User-Agent': 'LangChain-MCP-Client/1.0',
-        };
-        Logger.log('[UCAN] Using UCAN invocation for memory engine auth');
-      }
-    } catch (err) {
-      Logger.warn(
-        `[Memory MCP UCAN] Failed to create invocation, falling back to Matrix auth: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  } else if (ucanService) {
-    // ucanService exists but hasSigningKey is false or userDid is missing
-    Logger.warn(
-      `[Memory MCP UCAN] Skipped — hasSigningKey=${ucanService.hasSigningKey()}, userDid=${configurable.configs?.user?.did ?? 'missing'}`,
-    );
-  }
+  // Memory-engine wiring intentionally removed from the agent path.
+  // The remote memory engine is not used by this oracle; keeping it out
+  // saves: one UCAN invocation per request, one MCP client construction,
+  // one sub-agent factory in the fan-out below, and several prompt
+  // sections. The `memory-agent.ts` / `MemoryEngineService` code stays
+  // on disk (other callers like SessionManager may still touch it) —
+  // we just don't invoke any of it from here.
 
   // Build sandbox upload config for file processing (HTTP upload, no MCP needed)
   // Upload still uses Matrix OpenID tokens (UCAN upload support TODO)
@@ -500,64 +444,22 @@ Promise<ReactAgent<any>> => {
       ? STANDALONE_EDITOR_PROMPTS
       : null;
 
-  const taskExecCtx = (configurable as Record<string, unknown>)
-    .taskExecutionContext as TaskExecutionContext | undefined;
-
-  const operationalMode = taskExecCtx
-    ? [
-        `**Autonomous Task Execution Mode**`,
-        ``,
-        `You are running a scheduled task autonomously — no human is in the loop. The user message contains a Task Page that is your **complete blueprint**. You MUST follow this exact 2-step sequence:`,
-        ``,
-        `## Step 1: Execute the Task`,
-        `- Follow the Task Page exactly — execute "What to Do", format per "How to Report", obey "Constraints".`,
-        `- If a step fails, check "Notes" for fallbacks before improvising. If the page is missing critical sections, report failure instead of guessing.`,
-        `- Do not ask questions or narrate. Deliver only the requested output.`,
-        ``,
-        `### Tool Preferences`,
-        `- **API calls / JSON data**: ALWAYS use the Sandbox (write a fetch/curl/requests script). NEVER use Firecrawl for API endpoints (/api/, /v1/, /v2/, /v3/, JSON responses).`,
-        `- **Web scraping (human-readable pages)**: Use the Firecrawl Agent for scraping articles, blogs, news pages.`,
-        `- **Web search**: Use the Firecrawl Agent's search tool for quick web searches.`,
-        `- **Memory**: Use the Memory Agent to recall prior knowledge before external lookups.`,
-        ``,
-        `## Step 2: Execution Report (REQUIRED)`,
-        `After producing your output, you MUST review your execution before finishing:`,
-        ``,
-        `1. **Task Page Notes** — Use the editor to append to "Notes" under "### Run #${taskExecCtx.runNumber} Learnings":`,
-        `   - If issues occurred (API failures, retries, fallbacks, unexpected data): document each one concisely.`,
-        `   - If everything was smooth: write "No issues encountered."`,
-        `   Do NOT overwrite existing notes.`,
-        `2. **Memory Engine** — Use the Memory Agent to store any cross-task learnings that could benefit future tasks (e.g., "API X rate-limits at 10 req/min", "Website Y needs JS rendering").`,
-      ].join('\n')
-    : editorPrompts
-      ? editorPrompts.operationalMode
-      : state.currentEntityDid
+  const operationalMode = editorPrompts
+    ? editorPrompts.operationalMode
+    : state.currentEntityDid
         ? [
             `**Entity Context Active**`,
             ``,
             `You are currently viewing an entity (DID: ${state.currentEntityDid}). Use:`,
-            `- **Domain Indexer Agent** for entity discovery, overviews, and FAQs`,
             `- **Portal Agent** for navigation or UI actions (e.g., \`showEntity\`)`,
-            `- **Memory Agent** for historical knowledge`,
-            `For entities like ecs, supamoto, ixo, QI, use both Domain Indexer and Memory Agent together.`,
             ``,
-            `**Important:** Pages (BlockNote documents) are NOT entities. For pages, use \`list_workspace_pages\` and \`call_editor_agent\` — never the Domain Indexer.`,
+            `**Important:** Pages (BlockNote documents) are NOT entities. For pages, use \`list_workspace_pages\` and \`call_editor_agent\`.`,
           ].join('\n')
         : [
             `**General Conversation Mode**`,
             ``,
-            `Default to conversation mode, using the Memory Agent for recall and the Firecrawl Agent for external research or fresh data.`,
-            ``,
             `### Tool Preferences`,
-            `- **API calls / JSON data**: ALWAYS use the Sandbox (write a fetch/curl/requests script). NEVER use Firecrawl for API endpoints.`,
-            `- **Web scraping (human-readable pages)**: Use the Firecrawl Agent for articles, blogs, news.`,
-            `- **Web search**: Use the Firecrawl Agent's search tool.`,
-            ``,
-            `### Task Trial Runs`,
-            `When the Task Manager asks you to do a trial run for a scheduled task, you are testing the work so the user can approve it. After completing the work:`,
-            `1. Show the user the result as requested.`,
-            `2. **Report your execution trace** — list every agent, URL, API endpoint (with params), search query, skill (name + CID), and the step-by-step order. Mention any failures or fallbacks.`,
-            `This trace is critical — the Task Manager uses it to write a detailed task page for autonomous runs.`,
+            `- **API calls / JSON data**: ALWAYS use the Sandbox (write a fetch/curl/requests script).`,
           ].join('\n');
 
   const editorSection = editorPrompts?.editorSection ?? '';
@@ -579,14 +481,12 @@ Promise<ReactAgent<any>> => {
     return fallback;
   };
 
-  const [
-    portalResult,
-    memoryResult,
-    firecrawlResult,
-    domainIndexerResult,
-    sandboxResult,
-    taskManagerResult,
-  ] = await Promise.allSettled([
+  // We just finished a sync-heavy prep block (UCAN delegation lookup,
+  // tool schema parsing, etc). Yield once before launching the sub-agent
+  // factory fan-out so the liveness probe can answer in this gap.
+  await yieldToEventLoop();
+
+  const [portalResult, sandboxResult] = await Promise.allSettled([
     createPortalAgent({
       tools:
         state.browserTools
@@ -601,59 +501,17 @@ Promise<ReactAgent<any>> => {
       userDid: configurable.configs.user.did,
       sessionId: configurable.thread_id,
     }),
-    createMemoryAgent({
-      headers: memoryHeaders,
-      mode: 'user',
-      userDid: configurable.configs.user.did,
-      sessionId: configurable.thread_id,
-    }),
-    createFirecrawlAgent({
-      userDid: configurable.configs.user.did,
-      sessionId: configurable.thread_id,
-    }),
-    createDomainIndexerAgent({
-      userDid: configurable.configs.user.did,
-      sessionId: configurable.thread_id,
-    }),
     sandboxMCP?.getTools() ?? Promise.resolve([]),
-    matrix?.roomId && tasksService && userMatrixId
-      ? createTaskManagerAgent({
-          tasksService,
-          mainRoomId: matrix.roomId,
-          userDid: configurable.configs.user.did,
-          matrixUserId: userMatrixId,
-          sessionId: configurable.thread_id,
-          timezone: timezone ?? 'UTC',
-          spaceId: state.spaceId,
-        })
-      : Promise.resolve(null),
   ]);
 
   const portalAgent = settled(portalResult, null, 'Portal Agent');
-  const memoryAgent = settled(
-    memoryResult,
-    null,
-    'Memory Agent (memory-engine MCP)',
-  );
-  const firecrawlAgent = settled(
-    firecrawlResult,
-    null,
-    'Firecrawl Agent (firecrawl MCP)',
-  );
-  const domainIndexerAgent = settled(
-    domainIndexerResult,
-    null,
-    'Domain Indexer Agent',
-  );
   const sandboxTools = settled(sandboxResult, [], 'Sandbox MCP');
-  const taskManagerAgent = settled(
-    taskManagerResult,
-    null,
-    'Task Manager Agent',
-  );
 
   // System prompt — built after Promise.allSettled so per-result context
   // sections are only populated when their services actually loaded.
+  // Yield once before the (synchronous, ~30-variable) mustache expansion
+  // so the probe doesn't get blocked behind it.
+  await yieldToEventLoop();
   const systemPrompt = await AI_ASSISTANT_PROMPT.format({
     APP_NAME:
       userPreferences?.agentName ??
@@ -661,12 +519,6 @@ Promise<ReactAgent<any>> => {
       configService.get('ORACLE_NAME') ??
       'Oracle',
     ORACLE_CONTEXT: buildOracleContext(oracleConfig),
-    IDENTITY_CONTEXT: formatUserContext(state?.userContext?.identity),
-    WORK_CONTEXT: formatUserContext(state?.userContext?.work),
-    GOALS_CONTEXT: formatUserContext(state?.userContext?.goals),
-    INTERESTS_CONTEXT: formatUserContext(state?.userContext?.interests),
-    RELATIONSHIPS_CONTEXT: formatUserContext(state?.userContext?.relationships),
-    RECENT_CONTEXT: formatUserContext(state?.userContext?.recent),
     TIME_CONTEXT: timeContext,
     CURRENT_ENTITY_DID: state.currentEntityDid ?? '',
     OPERATIONAL_MODE: operationalMode,
@@ -677,7 +529,6 @@ Promise<ReactAgent<any>> => {
       secretIndex.length > 0
         ? secretIndex.map((s) => `- _USER_SECRET_${s.name}`).join('\n')
         : '',
-    COMPOSIO_CONTEXT: '',
     ECS_ORACLE_SKILL_DOCUMENTATION: ecsAuthorized
       ? ECS_ORACLE_SKILL_DOCUMENTATION
       : '',
@@ -858,15 +709,6 @@ Promise<ReactAgent<any>> => {
   const callPortalAgentTool = portalAgent
     ? createSubagentAsTool(withTimeContext(portalAgent))
     : null;
-  const callMemoryAgentTool = memoryAgent
-    ? createSubagentAsTool(withTimeContext(memoryAgent))
-    : null;
-  const callFirecrawlAgentTool = firecrawlAgent
-    ? createSubagentAsTool(withTimeContext(firecrawlAgent))
-    : null;
-  const callDomainIndexerAgentTool = domainIndexerAgent
-    ? createSubagentAsTool(withTimeContext(domainIndexerAgent))
-    : null;
   const callAguiAgentTool = aguiAgentSpec
     ? createSubagentAsTool(withTimeContext(aguiAgentSpec), {
         forwardTools: agActionTools.map((t) => t.name),
@@ -891,21 +733,6 @@ Promise<ReactAgent<any>> => {
           : undefined,
       })
     : null;
-  const callTaskManagerAgentTool = taskManagerAgent
-    ? createSubagentAsTool(withTimeContext(taskManagerAgent), {
-        forwardTools: [
-          'create_task',
-          'list_tasks',
-          'get_task_status',
-          'set_approval_gate',
-          'pause_task',
-          'resume_task',
-          'cancel_task',
-          'update_task_schedule',
-        ],
-      })
-    : null;
-
   let finalSystemPrompt = systemPrompt;
   if (unavailableServices.length > 0) {
     const serviceList = unavailableServices.map((s) => `- ${s}`).join('\n');
@@ -979,11 +806,7 @@ Promise<ReactAgent<any>> => {
       listSkillsTool,
       searchSkillsTool,
       ...(callPortalAgentTool ? [callPortalAgentTool] : []),
-      ...(callMemoryAgentTool ? [callMemoryAgentTool] : []),
-      ...(callFirecrawlAgentTool ? [callFirecrawlAgentTool] : []),
-      ...(callDomainIndexerAgentTool ? [callDomainIndexerAgentTool] : []),
       ...(callEditorAgentTool ? [callEditorAgentTool] : []),
-      ...(callTaskManagerAgentTool ? [callTaskManagerAgentTool] : []),
       ...(fileProcessingService
         ? [
             createFileProcessingTool(
@@ -1008,10 +831,13 @@ Promise<ReactAgent<any>> => {
       editorRoomId: z.string().optional(),
     }),
     systemPrompt: finalSystemPrompt,
-    checkpointer: SqliteSaver.fromDatabase(
-      await UserMatrixSqliteSyncService.getInstance().getUserDatabase(
-        configurable?.configs?.user?.did,
+    checkpointer: timedCheckpointer(
+      SqliteSaver.fromDatabase(
+        await UserMatrixSqliteSyncService.getInstance().getUserDatabase(
+          configurable?.configs?.user?.did,
+        ),
       ),
+      'main-agent',
     ),
     name: 'Companion Agent',
   });
