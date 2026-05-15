@@ -20,6 +20,7 @@ import type { ENV } from 'src/types';
 import { MemoryEngineService, SessionManagerService } from '@ixo/common';
 import { MatrixManager } from '@ixo/matrix';
 import { MainAgentGraph } from 'src/graph';
+import { NoopMemoryEngineService } from 'src/memory-engine/noop-memory-engine.service';
 import { CheckpointStorageSyncModule } from 'src/user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.module';
 import { UserMatrixSqliteSyncService } from 'src/user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
 import { ApprovalService } from './approval.service';
@@ -87,26 +88,18 @@ import { TasksService } from './task.service';
 
     {
       provide: MemoryEngineService,
-      useFactory: (configService: ConfigService<ENV>) => {
-        const memoryEngineUrl =
-          configService.getOrThrow<string>('MEMORY_ENGINE_URL');
-        return new MemoryEngineService(memoryEngineUrl);
-      },
-      inject: [ConfigService],
+      useFactory: () => new NoopMemoryEngineService(),
     },
     {
       provide: SessionManagerService,
-      useFactory: (
-        syncService: UserMatrixSqliteSyncService,
-        memoryEngineService: MemoryEngineService,
-      ) => {
+      useFactory: (syncService: UserMatrixSqliteSyncService) => {
         return new SessionManagerService(
           syncService,
           MatrixManager.getInstance(),
-          memoryEngineService,
+          undefined,
         );
       },
-      inject: [UserMatrixSqliteSyncService, MemoryEngineService],
+      inject: [UserMatrixSqliteSyncService],
     },
   ],
   exports: [TasksScheduler, TasksService, ApprovalService],

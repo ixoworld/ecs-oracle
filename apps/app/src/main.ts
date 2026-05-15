@@ -11,6 +11,10 @@ import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { Cache } from 'cache-manager';
 import helmet from 'helmet';
+import { readFileSync } from 'node:fs';
+import { totalmem, freemem } from 'node:os';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { getHeapStatistics } from 'node:v8';
 import { AppModule } from './app.module';
 import { type ENV, isRedisEnabled } from './config';
 import { UcanService } from './ucan/ucan.service';
@@ -19,6 +23,146 @@ import { initModelPricingCache } from './graph/llm-provider';
 import { SecretsService } from './secrets/secrets.service';
 import { UserMatrixSqliteSyncService } from './user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
 import { UserPreferencesService } from './user-preferences/user-preferences.service';
+
+// --- Event-loop + memory monitor ------------------------------------------
+// Every 5s, logs one line with:
+//   • Event loop:   max / p99 / mean lag. >1000ms = same condition that
+//                   trips the production liveness probe (1s timeout × 3
+//                   failures = SIGKILL).
+//   • V8 heap:      heapUsed / heapTotal / heapLimit (the --max-old-space-size
+//                   ceiling). V8 throws fatal "JS heap out of memory" near
+//                   100% of heapLimit.
+//   • rss:          Resident set — what the kernel cgroup-OOM-killer watches.
+//   • external:     C++ side of V8 (includes arrayBuffers + native objects
+//                   like sqlite handles, Olm sessions held by JS).
+//   • arrayBuffers: Subset of external — typed-array / Buffer memory. If
+//                   external is high but arrayBuffers is low, the pressure
+//                   is from native modules; if arrayBuffers is high it's
+//                   from JS-managed buffers (MCP responses, message
+//                   decryption staging, etc.).
+//   • sysFree/sysTotal: cgroup-aware view of container memory (Node ≥16
+//                   honours the cgroup limit).
+// Logged at WARN when:
+//   - event-loop max ≥ 1000ms (liveness probe at imminent risk)
+//   - heapUsed ≥ 80% of heapLimit (V8 OOM risk)
+//   - rss      ≥ 90% of sysTotal  (kernel OOM risk)
+// Otherwise LOG so we get a continuous trail for post-mortems.
+const eventLoopMonitor = monitorEventLoopDelay({ resolution: 50 });
+eventLoopMonitor.enable();
+
+// Read cgroup-v2 CPU stats. Returns undefined on non-Linux or pre-v2 hosts
+// (e.g. local Mac dev) so the monitor still works everywhere.
+type CgroupCpuStat = {
+  usageUsec: number;
+  nrThrottled: number;
+  throttledUsec: number;
+};
+const readCgroupCpuStat = (): CgroupCpuStat | undefined => {
+  try {
+    const raw = readFileSync('/sys/fs/cgroup/cpu.stat', 'utf8');
+    const out: Partial<CgroupCpuStat> = {};
+    for (const line of raw.split('\n')) {
+      const [k, v] = line.split(' ');
+      if (k === 'usage_usec') out.usageUsec = Number(v);
+      else if (k === 'nr_throttled') out.nrThrottled = Number(v);
+      else if (k === 'throttled_usec') out.throttledUsec = Number(v);
+    }
+    if (out.usageUsec === undefined) return undefined;
+    return {
+      usageUsec: out.usageUsec,
+      nrThrottled: out.nrThrottled ?? 0,
+      throttledUsec: out.throttledUsec ?? 0,
+    };
+  } catch {
+    return undefined;
+  }
+};
+// cgroup-v2 quota: "<max|quota_us> <period_us>". If first token is "max"
+// the cgroup is unconstrained; otherwise quota/period = guaranteed cores.
+const readCgroupCpuMax = (): number | undefined => {
+  try {
+    const raw = readFileSync('/sys/fs/cgroup/cpu.max', 'utf8').trim();
+    const [quota, period] = raw.split(/\s+/);
+    if (quota === 'max') return undefined;
+    const q = Number(quota);
+    const p = Number(period);
+    if (!q || !p) return undefined;
+    return q / p;
+  } catch {
+    return undefined;
+  }
+};
+const cpuQuotaCores = readCgroupCpuMax();
+let prevCpuUsage = process.cpuUsage();
+let prevWallNs = process.hrtime.bigint();
+let prevCgStat = readCgroupCpuStat();
+
+setInterval(() => {
+  const max = Math.round(eventLoopMonitor.max / 1e6);
+  const p99 = Math.round(eventLoopMonitor.percentile(99) / 1e6);
+  const mean = Math.round(eventLoopMonitor.mean / 1e6);
+  eventLoopMonitor.reset();
+
+  const mem = process.memoryUsage();
+  const heapLimit = getHeapStatistics().heap_size_limit;
+  const sysTotal = totalmem();
+  const sysFree = freemem();
+  const mb = (n: number): number => Math.round(n / 1024 / 1024);
+  const heapPct = Math.round((mem.heapUsed / heapLimit) * 100);
+  const rssPct = Math.round((mem.rss / sysTotal) * 100);
+
+  // CPU sample. Two views:
+  //   procCpu = process.cpuUsage() delta / wall time   (cores used by Node)
+  //   cgCpu   = cgroup cpu.stat usage_usec delta / wall (cores used by the
+  //             whole pod cgroup — same as `kubectl top pod` numerator)
+  // throttled* fields only appear on Linux cgroup-v2. On Mac they're absent.
+  const nowCpu = process.cpuUsage();
+  const nowWall = process.hrtime.bigint();
+  const nowCg = readCgroupCpuStat();
+  const wallUs = Number(nowWall - prevWallNs) / 1000;
+  const procCpuUs =
+    nowCpu.user - prevCpuUsage.user + (nowCpu.system - prevCpuUsage.system);
+  const procCpuCores = wallUs > 0 ? procCpuUs / wallUs : 0;
+  let cgCpuCores: number | undefined;
+  let throttledMs = 0;
+  let nrThrottled = 0;
+  if (nowCg && prevCgStat) {
+    cgCpuCores =
+      wallUs > 0 ? (nowCg.usageUsec - prevCgStat.usageUsec) / wallUs : 0;
+    throttledMs = Math.round(
+      (nowCg.throttledUsec - prevCgStat.throttledUsec) / 1000,
+    );
+    nrThrottled = nowCg.nrThrottled - prevCgStat.nrThrottled;
+  }
+  prevCpuUsage = nowCpu;
+  prevWallNs = nowWall;
+  prevCgStat = nowCg;
+
+  const cpuQuotaStr = cpuQuotaCores
+    ? `/${cpuQuotaCores.toFixed(2)}c`
+    : '';
+  const cgCpuStr =
+    cgCpuCores !== undefined ? ` cg=${cgCpuCores.toFixed(2)}c${cpuQuotaStr}` : '';
+  const throttleStr =
+    throttledMs > 0 || nrThrottled > 0
+      ? ` THROTTLED=${throttledMs}ms×${nrThrottled}`
+      : '';
+
+  const line =
+    `[lag] max=${max}ms p99=${p99}ms mean=${mean}ms | ` +
+    `cpu proc=${procCpuCores.toFixed(2)}c${cgCpuStr}${throttleStr} | ` +
+    `heap=${mb(mem.heapUsed)}/${mb(mem.heapTotal)}/${mb(heapLimit)}MB (${heapPct}%) ` +
+    `rss=${mb(mem.rss)}MB (${rssPct}% of cgroup) ` +
+    `external=${mb(mem.external)}MB arrBuf=${mb(mem.arrayBuffers)}MB ` +
+    `sysFree=${mb(sysFree)}/${mb(sysTotal)}MB`;
+
+  if (max >= 1000 || heapPct >= 80 || rssPct >= 90 || throttledMs > 0) {
+    Logger.warn(line, 'EventLoopMonitor');
+  } else {
+    Logger.log(line, 'EventLoopMonitor');
+  }
+}, 5000).unref();
+// --------------------------------------------------------------------------
 
 async function bootstrap(): Promise<void> {
   // await migrate();

@@ -18,6 +18,8 @@ import { emojify } from 'node-emoji';
 import { UserMatrixSqliteSyncService } from 'src/user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.service';
 import { z } from 'zod';
 import { createSummarizationMiddleware } from '../middlewares/summarization-middleware';
+import { yieldToEventLoop } from '../../utils/event-loop';
+import { timedCheckpointer } from '../../utils/timed-checkpointer';
 
 /**
  * Spec for an agent that can be run as a one-shot subagent (no checkpointer).
@@ -102,20 +104,35 @@ function lastMessageContent(messages: { content?: unknown }[]): string {
  * LangChain-generated ids like `functions.create_data_table:0` starting at
  * 0, and two invocations in one chat collide — the frontend uses these
  * ids as React keys and picks the wrong artifact.
+ *
+ * Async because the loop yields to the event loop every YIELD_EVERY
+ * messages so the liveness probe can answer mid-filter when a sub-agent
+ * returns a large message stream.
  */
-function filterForwardedMessages(
+const YIELD_EVERY_MESSAGES = 50;
+
+async function filterForwardedMessages(
   messages: BaseMessage[],
   forwardTools: Set<string>,
   idPrefix: string,
-): BaseMessage[] {
+): Promise<BaseMessage[]> {
   const oldToNewId = new Map<string, string>();
   const logger = new Logger('filterForwardedMessages');
+  const acc: BaseMessage[] = [];
 
   logger.debug(
     `Filtering ${messages.length} messages for forwarded tools: [${[...forwardTools].join(', ')}] (prefix=${idPrefix})`,
   );
 
-  return messages.reduce<BaseMessage[]>((acc, msg, i) => {
+  for (let i = 0; i < messages.length; i += 1) {
+    // Cheap cooperative yield. Most sub-agent runs produce < 50 messages
+    // so the conditional never fires; only the unusually long traces pay
+    // a single setImmediate hop per chunk.
+    if (i > 0 && i % YIELD_EVERY_MESSAGES === 0) {
+      await yieldToEventLoop();
+    }
+
+    const msg = messages[i];
     const type = msg.type;
 
     if (type === 'ai') {
@@ -125,7 +142,7 @@ function filterForwardedMessages(
       logger.debug(
         `msg[${i}] type=ai, tool_calls=[${allCalls.map((tc) => tc.name).join(', ')}], matched=${calls.length}`,
       );
-      if (calls.length === 0) return acc;
+      if (calls.length === 0) continue;
       const rewritten = calls.map((tc) => {
         if (!tc.id) return tc;
         const newId = `${idPrefix}_${tc.id}`;
@@ -142,7 +159,7 @@ function filterForwardedMessages(
       logger.debug(
         `msg[${i}] type=tool, tool_call_id=${toolMsg.tool_call_id}, matched=${matched}`,
       );
-      if (!matched) return acc;
+      if (!matched) continue;
       acc.push(
         new ToolMessage({
           content: toolMsg.content,
@@ -151,9 +168,9 @@ function filterForwardedMessages(
         }),
       );
     }
+  }
 
-    return acc;
-  }, []);
+  return acc;
 }
 
 /**
@@ -205,16 +222,20 @@ export function createSubagentAsTool(
     spec.tools &&
     spec.tools.length > 0;
 
-  const buildResult = (
+  const buildResult = async (
     messages: BaseMessage[],
     toolCallId: string,
-  ): string | Command => {
+  ): Promise<string | Command> => {
     const text = emojify(lastMessageContent(messages));
 
     if (forwardSet.size === 0) return text;
 
     const idPrefix = toolCallId || `run_${randomUUID().slice(0, 8)}`;
-    const forwarded = filterForwardedMessages(messages, forwardSet, idPrefix);
+    const forwarded = await filterForwardedMessages(
+      messages,
+      forwardSet,
+      idPrefix,
+    );
     if (forwarded.length === 0) return text;
 
     return new Command({
@@ -234,10 +255,13 @@ export function createSubagentAsTool(
           return `Error: ${spec.name} has no model configured.`;
         }
 
-        const checkpointer = SqliteSaver.fromDatabase(
-          await UserMatrixSqliteSyncService.getInstance().getUserDatabase(
-            spec.userDid,
+        const checkpointer = timedCheckpointer(
+          SqliteSaver.fromDatabase(
+            await UserMatrixSqliteSyncService.getInstance().getUserDatabase(
+              spec.userDid,
+            ),
           ),
+          `subagent:${spec.name ?? 'unknown'}`,
         );
 
         const middleware: AgentMiddleware[] = [...(spec.middleware ?? [])];
@@ -279,7 +303,7 @@ export function createSubagentAsTool(
           );
         }
 
-        return buildResult(messages, config.toolCall?.id ?? '');
+        return await buildResult(messages, config.toolCall?.id ?? '');
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return `Error running ${spec.name}: ${message}`;

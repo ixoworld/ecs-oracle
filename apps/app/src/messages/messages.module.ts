@@ -1,12 +1,11 @@
 import { MemoryEngineService, SessionManagerService } from '@ixo/common';
 import { Module } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { MainAgentGraph } from 'src/graph';
-import { type ENV } from 'src/types';
 // SseService is provided globally by SseModule, no need to import or provide here.
 import { MatrixManager } from '@ixo/matrix';
 import { ChannelMemoryModule } from 'src/channel-memory/channel-memory.module';
 import { isRedisEnabled } from 'src/config';
+import { NoopMemoryEngineService } from 'src/memory-engine/noop-memory-engine.service';
 import { TasksModule } from 'src/tasks/tasks.module';
 import { UcanModule } from 'src/ucan/ucan.module';
 import { CheckpointStorageSyncModule } from 'src/user-matrix-sqlite-sync-service/user-matrix-sqlite-sync-service.module';
@@ -30,26 +29,18 @@ import { MessagesService } from './messages.service';
     MainAgentGraph,
     {
       provide: MemoryEngineService,
-      useFactory: (configService: ConfigService<ENV>) => {
-        const memoryEngineUrl =
-          configService.getOrThrow<string>('MEMORY_ENGINE_URL');
-        return new MemoryEngineService(memoryEngineUrl);
-      },
-      inject: [ConfigService],
+      useFactory: () => new NoopMemoryEngineService(),
     },
     {
       provide: SessionManagerService,
-      useFactory: (
-        syncService: UserMatrixSqliteSyncService,
-        memoryEngineService: MemoryEngineService,
-      ) => {
+      useFactory: (syncService: UserMatrixSqliteSyncService) => {
         return new SessionManagerService(
           syncService,
           MatrixManager.getInstance(),
-          memoryEngineService,
+          undefined,
         );
       },
-      inject: [UserMatrixSqliteSyncService, MemoryEngineService],
+      inject: [UserMatrixSqliteSyncService],
     },
   ],
   exports: [MessagesService, MemoryEngineService, SessionManagerService],
