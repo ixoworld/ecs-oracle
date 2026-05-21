@@ -19,6 +19,7 @@ import {
   AG_UI_TOOLS_DOCUMENTATION,
   AI_ASSISTANT_PROMPT,
   ECS_ORACLE_SKILL_DOCUMENTATION,
+  ECS_ORACLE_SKILL_NOT_AUTHORIZED,
   SLACK_FORMATTING_CONSTRAINTS_CONTENT,
 } from '../nodes/chat-node/prompt';
 import { isEcsAuthorized } from '../utils/ecs-access';
@@ -531,7 +532,7 @@ Promise<ReactAgent<any>> => {
         : '',
     ECS_ORACLE_SKILL_DOCUMENTATION: ecsAuthorized
       ? ECS_ORACLE_SKILL_DOCUMENTATION
-      : '',
+      : ECS_ORACLE_SKILL_NOT_AUTHORIZED,
     AG_UI_TOOLS_DOCUMENTATION:
       agActionTools.length > 0 ? AG_UI_TOOLS_DOCUMENTATION : '',
     USER_PREFERENCES_CONTEXT: formatUserPreferences(userPreferences),

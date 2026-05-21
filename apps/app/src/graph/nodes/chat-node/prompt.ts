@@ -676,6 +676,50 @@ Use AG-UI tools when:
 Refer to each tool's specific schema and description for exact parameters and capabilities.
 ---`;
 
+/**
+ * Injected in place of `ECS_ORACLE_SKILL_DOCUMENTATION` when the current
+ * user DID is **not** in the ECS whitelist (see \`utils/ecs-access.ts\`).
+ *
+ * The previous behaviour was to inject an empty string, which left the
+ * agent free to autonomously discover the ecs-oracle skill via
+ * \`list_skills\`, try to invoke it, fail with \`MISSING_SECRET\` (because
+ * the oracle secrets are also gated by the same whitelist), then expose
+ * implementation details (CIDs, x-os-* headers, secret names) to the
+ * user while begging for credentials. That is the WORST possible UX for
+ * an unauthorised user.
+ *
+ * This block tells the agent to short-circuit any ECS / SupaMoto data
+ * question with a clean polite refusal and a contact-admin pointer.
+ */
+export const ECS_ORACLE_SKILL_NOT_AUTHORIZED = `---
+## 📊 ECS / SupaMoto Business Data — ACCESS NOT GRANTED
+
+The **current user does NOT have acecess to ECS data.** They may not access ECS / SupaMoto business data through this oracle.
+
+### 🛑 MANDATORY behaviour when the user asks about ECS data
+
+Whenever the user's message touches ECS / SupaMoto / customer / subscription / household / stove / claim / pellet / Zambia / Malawi / Mozambique / country breakdown / onboarding / dashboard data — i.e. any subject that would normally route to the ecs-oracle skill — **respond with a short polite refusal** along the lines of:
+
+> "I'm not authorised to access the ECS / SupaMoto business data for your account. If you need access, please contact your ECS administrator to be given access."
+
+That's it. One sentence + one contact pointer (ECS Administrator that is all). No further detail.
+
+### 🚫 STRICTLY FORBIDDEN — these leak internals and produce confusion
+
+- ❌ \`list_skills\`, \`search_skills\`, \`load_skill\`, \`read_skill\` — do NOT browse for the ecs-oracle skill. It exists, but you cannot use it for this user. Calling these tools wastes a turn and surfaces the skill's existence.
+- ❌ \`sandbox_run\` against the ecs-oracle skill — the oracle does not inject the ECS secrets for non-whitelisted users, so any execution exits with \`MISSING_SECRET\`. Don't attempt it.
+- ❌ Mentioning any of: skill CIDs, "ecs-oracle skill", \`x-os-*\` headers, \`_ORACLE_SECRET_*\` env vars, MCP servers, secret injection, the ECS REST API endpoints, the SupaMoto Matrix server, \`fetch.js\` / \`query.js\`, or any other implementation detail. The user does not need to know these exist.
+- ❌ Asking the user to provide ECS credentials, API tokens, or "ECS server URLs". You will never receive those from a user message and asking is misleading.
+- ❌ Offering workarounds like "let me check the entity profile" / "let me try the Portal Agent" / "are there cached artifacts". None of those have ECS data — only the gated skill does, and the user is not gated in.
+- ❌ Speculating about how many customers / claims / etc there are based on prior conversations, sample rows, or anything you might have seen in another session.
+
+### ✅ ALLOWED
+
+- Non-ECS questions (general chat, IXO blockchain questions, working with editor pages they own, etc.) proceed normally. The whitelist only affects the ECS data path.
+- If the user explicitly asks why they don't have access, or how to get it: tell them their account isn't on the access list and they should contact the ECS administrator. Don't expose the whitelist file or the technical mechanism. Note the restriction is just for ECS specific data, you can still answer generic questions like what is a cookstove and a pellet and where is ECS operating without issue.
+
+---`;
+
 export const ECS_ORACLE_SKILL_DOCUMENTATION = `---
 ## 📊 ECS / SupaMoto Business Data
 
