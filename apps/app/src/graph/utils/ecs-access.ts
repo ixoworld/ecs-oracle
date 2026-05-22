@@ -71,6 +71,8 @@ const ALLOWED_ECS_DIDS: ReadonlySet<string> = new Set([
   'did:ixo:ixo16ugu3hsfnuk80jvazgttlaw48h8se6teuz3v80', // Loveness Chibwe
   'did:ixo:ixo1vd0kwtt8kqh93mk6jde9evs24uf038lswh86es', // Joshua
   'did:ixo:ixo1rl9vhhxg0t7ywlh953gtthphg889v7d3e2gx7k', // mike (mainnet)
+  'did:ixo:ixo1m58rjq8qcr6w0h05d05gazv52wyd8a2fa7dauk',
+  'did:ixo:ixo1n2nfvthnfcemajc76yl87kj2x7kw4jk469v5re',
 ]);
 
 /** True iff this user DID may use the ecs-oracle skill. */
