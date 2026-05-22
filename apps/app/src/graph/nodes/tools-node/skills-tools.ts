@@ -4,9 +4,9 @@ import { getConfig } from 'src/config';
 import z from 'zod';
 
 const configService = getConfig();
-const SKILLS_CAPSULES_BASE_URL = configService.getOrThrow(
-  'SKILLS_CAPSULES_BASE_URL',
-);
+const SKILLS_CAPSULES_BASE_URL =
+  configService.get('SKILLS_CAPSULES_BASE_URL') ??
+  'https://capsules.skills.ixo.earth';
 
 type Capsule = {
   cid: string;

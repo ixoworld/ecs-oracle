@@ -118,6 +118,8 @@ You have access to tools for editing collaborative documents backed by Y.js CRDT
 - \`fill_survey_answers\` — merge or replace survey answers
 - \`validate_survey_answers\` — check completeness, validity, and completion percentage
 
+**Scope:** these tools operate on **block-state** surveys — blocks whose \`surveySchema\` and \`answers\` live in \`block.props\` (e.g. form blocks). They do NOT see ephemeral right-side panel surveys (the user's open claim-submission or bid-submission panel) — those are React-only and have no \`blockId\` to address. Those forms are read/filled by the **Portal Agent** via \`list_open_surveys\` / \`fill_open_survey\` — the main agent will route appropriately.
+
 ### Action Execution
 
 - \`execute_action\` — executes an action block through the flow engine

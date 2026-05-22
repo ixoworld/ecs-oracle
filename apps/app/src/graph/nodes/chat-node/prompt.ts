@@ -414,6 +414,12 @@ recreate them first.
 5. Portal navigation? → Portal Agent
 6. General question? → Answer directly
 
+**Fill / complete / populate / answer / submit / make / start** (claim, bid, evaluation, application, form, survey, deed, etc.) — context-driven, not rule-driven:
+- The user may mean an **open right-side panel** (claim/bid/evaluation submission) → Portal Agent via \`list_open_surveys\` + \`fill_open_survey\`
+- Or an **in-page form block** whose answers persist to \`block.props.answers\` → Editor Agent via \`read_survey\` + \`fill_survey_answers\`
+- Both paths exist — pick by what's available. A fast way to disambiguate is to start with whichever target the user's wording points to most strongly; if uncertain, a \`list_open_surveys\` call is cheap and tells you definitively whether an ephemeral panel is open. If neither path has a match, ask the user where the form they mean is.
+- **Always combine with flow context**: when you fill an open right-side panel, the returned \`context.flowRoomId\` points at the flow document that owns it. Spawn the Editor Agent in parallel (or right before filling) with \`read_flow_context\` + \`read_flow_status\` against that room so you can pull deed/collection metadata, prior submissions and runtime state — that's the context that lets you fill sensibly instead of making up generic placeholders.
+
 **🔍 Tool Discovery — always try before giving up:**
 When the user asks for something and you're not sure which tool handles it:
 - \`search_skills\` / \`list_skills\` → find a skill
@@ -421,7 +427,7 @@ When the user asks for something and you're not sure which tool handles it:
 **SECONDARY: Specialized Agent Tools**
 
 Use agent tools for specific domains:
-- **Editor Agent**: BlockNote document operations, surveys (call_editor_agent) - prioritize in Editor Mode
+- **Editor Agent**: BlockNote document operations, in-page form blocks whose answers persist to \`block.props.answers\`, and flow context (read_flow_context, read_flow_status, list_blocks etc.) (call_editor_agent). Useful as a context source alongside Portal Agent when filling an open survey — the panel's flow room owns deed/collection metadata and runtime state the survey often depends on. Editor Agent has no \`list_open_surveys\` tool; ephemeral right-side panels belong to the Portal Agent.
 - **Portal Agent**: UI navigation, showEntity (call_portal_agent)
 - **AG-UI Agent**: Interactive tables, charts, forms in user's browser (call_ag-ui_agent)
 
@@ -431,6 +437,8 @@ Use agent tools for specific domains:
 3. Editor document? → Editor Agent (especially in Editor Mode)
 4. Portal navigation? → Portal Agent
 5. General question? → Answer directly
+
+When the user asks to **fill / complete / populate / answer / submit / make / start** a claim, bid, evaluation, application, form or survey, the target can be either an open right-side panel (Portal Agent → \`list_open_surveys\` + \`fill_open_survey\`) or an in-page form block (Editor Agent → \`read_survey\` + \`fill_survey_answers\`). Read what's open and decide based on context; \`list_open_surveys\` is a cheap probe when ambiguous. Always pull flow context from the flow's editor room alongside filling, so the values you write are informed by the deed / collection / prior submissions rather than generic placeholders.
 
 **Report & Content Generation — Format Confirmation:**
 When the user asks you to generate a report, summary, or substantial content, confirm the desired format:
@@ -475,12 +483,31 @@ Generate interactive UI components (tables, charts, forms) in user's browser via
 - **Context**: why this visualization is needed, so the agent can choose the best tool
 
 ### Portal Agent
-Navigate to entities, execute UI actions (showEntity, etc.).
+Navigate to entities, execute UI actions (showEntity, navigate), AND read/fill ephemeral SurveyJS forms that are open in the UI (right-side panels for claim submission, bid submission, etc.).
 
 **Task must specify:**
-- **Action**: which portal tool to use (e.g., showEntity, navigate)
-- **Parameters**: entity DID, page target, or other required identifiers
+- **Action**: which portal tool to use (e.g., showEntity, navigate, list_open_surveys, fill_open_survey)
+- **Parameters**: entity DID, page target, survey id + answers, or other required identifiers
 - **Context**: what the user is trying to accomplish in the UI
+
+**Open form / right-panel surveys — intent detection:**
+The user almost never says the word "form" when they want one filled. Route to Portal Agent for ANY of these intents while a flow/claim/bid/evaluation panel could plausibly be open:
+- "fill in / complete / populate / answer this …"
+- "submit / make / send / start a claim / bid / evaluation"
+- "do this for me", "handle this", "fill it out", "answer the questions"
+- "what's open?", "what am I working on?", "show me the open panel"
+- Any reference to "claim", "bid", "evaluation", "deed", "application", "submission" combined with a request to assist
+- A short "yes / go ahead / do it" reply right after the user opened a panel and was clearly about to fill something
+
+**The workflow when filling an open right-side panel:**
+1. \`list_open_surveys\` (returns each open survey's question summaries + full SurveyJS JSON schema by default). Use the schema to discover each question's allowed values — especially for dropdowns / radio / checkbox, where you MUST use the underlying \`choice.value\`, never the display label. If a question has \`choicesByUrl\` and \`loaded: false\`, the dropdown's options are still streaming in; either wait and retry or pass the ISO code you can already infer (country → ISO 3166 alpha-2, currency → ISO 4217, etc.).
+2. **Pull flow context alongside.** The survey's \`context.flowRoomId\` points at the editor room that owns the deed/collection/runtime state. Spawn \`call_editor_agent\` against that room with \`read_flow_context\` (flow-level env, protocolDid, deed metadata) and \`read_flow_status\` (per-block runtime state, prior claims/bids) so you fill with real values from the surrounding flow — not generic placeholders. Skip this only if the user explicitly asked for "dummy" / "test" data.
+3. \`fill_open_survey\` with the resolved values. The tool merges by default and reports any field-level rejections (e.g. "value X matches neither a choice value nor a choice text") so you can correct and retry just those fields.
+4. Tell the user the form has been filled and remind them to review + submit. Never claim to have submitted.
+
+If \`list_open_surveys\` returns an empty array: ask the user to open the panel they want filled, or — if the user clearly meant an in-page form block instead — switch to the Editor Agent's \`read_survey\` + \`fill_survey_answers\` path.
+
+**vs. block-state surveys** (form blocks inside an editor page whose answers persist to \`block.props.answers\`): those go through the **Editor Agent** via \`read_survey\` / \`fill_survey_answers\`, NOT the Portal Agent.
 
 {{{EDITOR_SECTION}}}
 
