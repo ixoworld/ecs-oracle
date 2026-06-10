@@ -190,6 +190,7 @@ async function bootstrap(): Promise<void> {
       'x-user-did',
       'x-data-token',
       'x-ucan-delegation',
+      'x-auth-type',
     ],
     exposedHeaders: ['X-Request-Id', 'X-Data-Row-Count'],
   });
