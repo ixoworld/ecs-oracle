@@ -75,6 +75,7 @@ const ALLOWED_ECS_DIDS: ReadonlySet<string> = new Set([
   'did:ixo:ixo1n2nfvthnfcemajc76yl87kj2x7kw4jk469v5re',
   'did:ixo:ixo1j6j67k4dd42xm3ut89khfg7rhwsyltf6gvk7ne',
   'did:ixo:ixo176lzl8xnxw7zaf2f50r8lhjgf25ktut447qhg4',
+  'did:ixo:ixo1e72yq6yv0asgdcwscu6fyv6nw9af2tz78j7zpy',
 ]);
 
 /** True iff this user DID may use the ecs-oracle skill. */
