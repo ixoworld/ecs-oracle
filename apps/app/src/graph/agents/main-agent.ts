@@ -217,7 +217,7 @@ export const createMainAgent = async ({
   ucanService,
   fileProcessingService,
   modelOverride,
-}: InvokeMainAgentParams):// eslint-disable-next-line @typescript-eslint/no-explicit-any
+}: InvokeMainAgentParams): // eslint-disable-next-line @typescript-eslint/no-explicit-any
 Promise<ReactAgent<any>> => {
   const msgFromMatrixRoom = Boolean(
     state.messages?.at(-1)?.additional_kwargs.msgFromMatrixRoom,
@@ -448,20 +448,20 @@ Promise<ReactAgent<any>> => {
   const operationalMode = editorPrompts
     ? editorPrompts.operationalMode
     : state.currentEntityDid
-        ? [
-            `**Entity Context Active**`,
-            ``,
-            `You are currently viewing an entity (DID: ${state.currentEntityDid}). Use:`,
-            `- **Portal Agent** for navigation or UI actions (e.g., \`showEntity\`)`,
-            ``,
-            `**Important:** Pages (BlockNote documents) are NOT entities. For pages, use \`list_workspace_pages\` and \`call_editor_agent\`.`,
-          ].join('\n')
-        : [
-            `**General Conversation Mode**`,
-            ``,
-            `### Tool Preferences`,
-            `- **API calls / JSON data**: ALWAYS use the Sandbox (write a fetch/curl/requests script).`,
-          ].join('\n');
+      ? [
+          `**Entity Context Active**`,
+          ``,
+          `You are currently viewing an entity (DID: ${state.currentEntityDid}). Use:`,
+          `- **Portal Agent** for navigation or UI actions (e.g., \`showEntity\`)`,
+          ``,
+          `**Important:** Pages (BlockNote documents) are NOT entities. For pages, use \`list_workspace_pages\` and \`call_editor_agent\`.`,
+        ].join('\n')
+      : [
+          `**General Conversation Mode**`,
+          ``,
+          `### Tool Preferences`,
+          `- **API calls / JSON data**: ALWAYS use the Sandbox (write a fetch/curl/requests script).`,
+        ].join('\n');
 
   const editorSection = editorPrompts?.editorSection ?? '';
 

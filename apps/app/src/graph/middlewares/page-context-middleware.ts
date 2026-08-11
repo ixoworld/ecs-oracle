@@ -20,7 +20,10 @@ import z from 'zod';
 const SUCCESS_TTL_MS = 60_000; // titles rarely change
 const FAILURE_TTL_MS = 120_000; // not-in-room is usually persistent
 
-const titleCache = new Map<string, { title: string | undefined; expiresAt: number }>();
+const titleCache = new Map<
+  string,
+  { title: string | undefined; expiresAt: number }
+>();
 
 function readCache(roomId: string): { title: string | undefined } | undefined {
   const hit = titleCache.get(roomId);
@@ -32,7 +35,11 @@ function readCache(roomId: string): { title: string | undefined } | undefined {
   return { title: hit.title };
 }
 
-function writeCache(roomId: string, title: string | undefined, ok: boolean): void {
+function writeCache(
+  roomId: string,
+  title: string | undefined,
+  ok: boolean,
+): void {
   titleCache.set(roomId, {
     title,
     expiresAt: Date.now() + (ok ? SUCCESS_TTL_MS : FAILURE_TTL_MS),

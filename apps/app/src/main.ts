@@ -138,11 +138,11 @@ setInterval(() => {
   prevWallNs = nowWall;
   prevCgStat = nowCg;
 
-  const cpuQuotaStr = cpuQuotaCores
-    ? `/${cpuQuotaCores.toFixed(2)}c`
-    : '';
+  const cpuQuotaStr = cpuQuotaCores ? `/${cpuQuotaCores.toFixed(2)}c` : '';
   const cgCpuStr =
-    cgCpuCores !== undefined ? ` cg=${cgCpuCores.toFixed(2)}c${cpuQuotaStr}` : '';
+    cgCpuCores !== undefined
+      ? ` cg=${cgCpuCores.toFixed(2)}c${cpuQuotaStr}`
+      : '';
   const throttleStr =
     throttledMs > 0 || nrThrottled > 0
       ? ` THROTTLED=${throttledMs}ms×${nrThrottled}`
