@@ -98,10 +98,14 @@ export class SessionsService {
         // Create UCAN invocation for memory engine
         try {
           const engineUrl = this.configService.getOrThrow('MEMORY_ENGINE_URL');
+          // `memory/*` — the ability the portal's delegation grants. A `'*'`
+          // claim is only satisfiable by a `'*'` grant, so it breaks the
+          // moment the memory engine validates chains strictly.
           const invocation = await this.ucanService.createServiceInvocation(
             engineUrl,
             data.did,
             'ixo:memory',
+            { can: 'memory/*' },
           );
           if (invocation) {
             memoryUcanInvocation = invocation;

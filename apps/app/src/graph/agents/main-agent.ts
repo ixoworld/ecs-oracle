@@ -165,6 +165,13 @@ async function mintInvocationHeader(args: {
   serviceUrl: string;
   userDid: string;
   resource: 'ixo:sandbox' | 'ixo:skills';
+  /**
+   * The ability to declare on the invocation. Must be one the portal's
+   * delegation actually grants (`sandbox/*` / `skills/*`) — claiming `'*'`
+   * is unsatisfiable against those grants and strict validators (ai-skills
+   * since Aug 2026, subscriptions since Jul 2026) reject it with 401.
+   */
+  can: string;
   headerName: string;
   bearer?: boolean;
   successLogContext: string;
@@ -175,6 +182,7 @@ async function mintInvocationHeader(args: {
     serviceUrl,
     userDid,
     resource,
+    can,
     headerName,
     bearer = false,
     successLogContext,
@@ -185,6 +193,7 @@ async function mintInvocationHeader(args: {
       serviceUrl,
       userDid,
       resource,
+      { can },
     );
     if (invocation) {
       Logger.debug(successLogContext);
@@ -325,6 +334,7 @@ Promise<ReactAgent<any>> => {
         serviceUrl: configService.getOrThrow('SANDBOX_MCP_URL'),
         userDid: configurable.configs.user.did,
         resource: 'ixo:sandbox',
+        can: 'sandbox/*',
         headerName: 'Authorization',
         bearer: true,
         successLogContext: '[UCAN] Using UCAN invocation for sandbox auth',
@@ -338,6 +348,7 @@ Promise<ReactAgent<any>> => {
           'https://capsules.skills.ixo.earth',
         userDid: configurable.configs.user.did,
         resource: 'ixo:skills',
+        can: 'skills/*',
         headerName: 'X-Skills-Invocation',
         successLogContext:
           '[UCAN] Attached X-Skills-Invocation header for sandbox',

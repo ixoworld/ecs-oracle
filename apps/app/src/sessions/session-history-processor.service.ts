@@ -201,10 +201,14 @@ export class SessionHistoryProcessor {
     let memoryUcanInvocation: string | undefined;
     if (this.ucanService?.hasSigningKey() && did) {
       try {
+        // `memory/*` — the ability the portal's delegation grants. A `'*'`
+        // claim is only satisfiable by a `'*'` grant, so it breaks the moment
+        // the memory engine validates chains strictly.
         const invocation = await this.ucanService.createServiceInvocation(
           this.configService.getOrThrow('MEMORY_ENGINE_URL'),
           did,
           'ixo:memory',
+          { can: 'memory/*' },
         );
         if (invocation) {
           memoryUcanInvocation = invocation;
